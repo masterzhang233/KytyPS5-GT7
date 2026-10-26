@@ -35,6 +35,18 @@ endif()
 target_include_directories(launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set_target_properties(launcher PROPERTIES AUTOUIC ON AUTOMOC ON AUTORCC ON)
 
+if(BUILD_TESTING)
+	add_executable(gt7_launcher_settings_tests EXCLUDE_FROM_ALL
+		"${CMAKE_CURRENT_SOURCE_DIR}/tests/Gt7SettingsTests.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/configuration.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/include/configuration.h")
+	target_include_directories(gt7_launcher_settings_tests PRIVATE
+		"${CMAKE_CURRENT_SOURCE_DIR}/include" "${KYTY_SOURCE_DIR}")
+	target_link_libraries(gt7_launcher_settings_tests PRIVATE Qt6::Widgets)
+	set_target_properties(gt7_launcher_settings_tests PROPERTIES AUTOMOC ON)
+	add_test(NAME gt7_launcher_settings COMMAND $<TARGET_FILE:gt7_launcher_settings_tests>)
+endif()
+
 if(WIN32 AND NOT KYTY_CLANG_CL)
 	set_target_properties(launcher PROPERTIES LINK_FLAGS "${KYTY_LD_OPTIONS}")
 elseif(LINUX)
@@ -114,14 +126,18 @@ endif()
 
 if(WIN32)
     install(CODE "
-    		execute_process(
-    			COMMAND ${QT_WINDEPLOYQT} \"\${CMAKE_INSTALL_PREFIX}/${launcher_name}.exe\"
-				--no-compiler-runtime
-				--no-system-d3d-compiler
-				--no-system-dxc-compiler
-				--no-opengl-sw
-				--no-translations
-    		)
+        execute_process(
+            COMMAND \"${QT_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${launcher_name}.exe\"
+                --no-compiler-runtime
+                --no-system-d3d-compiler
+                --no-system-dxc-compiler
+                --no-opengl-sw
+                --no-translations
+            RESULT_VARIABLE kyty_windeployqt_result
+        )
+        if(NOT kyty_windeployqt_result EQUAL 0)
+            message(FATAL_ERROR \"windeployqt failed with \${kyty_windeployqt_result}\")
+        endif()
     ")
 elseif(LINUX)
 	# Bundle the Qt runtime and plugins.

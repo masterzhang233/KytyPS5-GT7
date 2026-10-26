@@ -313,6 +313,8 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	"${KYTY_SOURCE_DIR}/graphics/presentation/*.h"
 	"${KYTY_SOURCE_DIR}/graphics/presentation/window/*.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/presentation/window/*.h"
+	"${KYTY_SOURCE_DIR}/graphics/vr/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/vr/*.h"
 	"${KYTY_SOURCE_DIR}/kernel/*.cpp"
 	"${KYTY_SOURCE_DIR}/kernel/*.h"
 	"${KYTY_SOURCE_DIR}/loader/*.cpp"
@@ -525,6 +527,9 @@ if (KYTY_CLANG_CL)
 endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus)
+if(WIN32)
+	list(APPEND kyty_emulator_link_libraries bcrypt advapi32)
+endif()
 
 # Linux system libraries.
 if(LINUX)
@@ -993,6 +998,23 @@ endif()
 add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
 configure_macos_guest_address_space(kyty_emulator)
 
+if(WIN32)
+	add_executable(gt7_profile_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/Gt7ProfileTests.cpp"
+		"${KYTY_SOURCE_DIR}/loader/gt7Profile.cpp")
+	target_include_directories(gt7_profile_tests PRIVATE "${KYTY_SOURCE_DIR}")
+	target_link_libraries(gt7_profile_tests PRIVATE nlohmann_json::nlohmann_json bcrypt)
+	add_executable(openvr_runtime_path_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/OpenVrRuntimePathTests.cpp"
+		"${KYTY_SOURCE_DIR}/graphics/vr/openvrRuntimePath.cpp")
+	target_include_directories(openvr_runtime_path_tests PRIVATE "${KYTY_SOURCE_DIR}")
+	target_link_libraries(openvr_runtime_path_tests PRIVATE nlohmann_json::nlohmann_json advapi32)
+	if(BUILD_TESTING)
+		add_test(NAME gt7_profile COMMAND $<TARGET_FILE:gt7_profile_tests>)
+		add_test(NAME openvr_runtime_path COMMAND $<TARGET_FILE:openvr_runtime_path_tests>)
+	endif()
+endif()
+
 set(KYTY_TROPHY_UNLOCK_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/sounds/trophy-unlock.wav")
 add_custom_target(kyty_trophy_sound
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:kyty_emulator>/assets/sounds"
@@ -1062,6 +1084,37 @@ if(APPLE)
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
+if(WIN32)
+	# Keep the checked GT7 profiles beside the executable: the launcher and CLI
+	# both resolve them relative to kyty_emulator.exe, independent of the cwd.
+	add_custom_command(TARGET kyty_emulator POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+			"${CMAKE_CURRENT_SOURCE_DIR}/patches/GT7"
+			"$<TARGET_FILE_DIR:kyty_emulator>/patches/GT7"
+		VERBATIM)
+	install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/patches/GT7" DESTINATION patches)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Start.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-LaunchSupport.ps1" DESTINATION scripts)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-VR.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Kyty-MIT.txt" DESTINATION licenses)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-NOTICE.md"
+		"${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-LGPL-3.0-only.txt"
+		"${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-GPL-3.0-only.txt" DESTINATION licenses/qt)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/openvr/LICENSE"
+		DESTINATION licenses/openvr)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/winpthread/COPYING"
+		DESTINATION licenses/winpthread)
+	# Qt's deploy helper copies Qt DLLs, but its compiler-runtime mode supplies a
+	# separate installer. Bundle the matching side-by-side MSVC CRT instead.
+	file(TO_CMAKE_PATH "$ENV{VCToolsRedistDir}" kyty_msvc_redist_dir)
+	file(GLOB kyty_msvc_crt_dlls "${kyty_msvc_redist_dir}/x64/Microsoft.VC*.CRT/*.dll")
+	if(kyty_msvc_crt_dlls)
+		install(FILES ${kyty_msvc_crt_dlls} DESTINATION .)
+	else()
+		message(WARNING "Windows portable install will need the matching Visual C++ runtime")
+	endif()
+endif()
 if(KYTY_BUILD_LAUNCHER)
 	add_subdirectory("${KYTY_SOURCE_DIR}/launcher" "${CMAKE_CURRENT_BINARY_DIR}/launcher")
 

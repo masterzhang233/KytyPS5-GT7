@@ -9,6 +9,7 @@
 #include "common/virtualMemory.h"
 #include "emulator.h"
 #include "kytyGitVersion.h"
+#include "loader/gt7Profile.h"
 
 #include <algorithm>
 #include <charconv>
@@ -107,6 +108,9 @@ static void PrintUsage() {
 	::printf("Options:\n");
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
+	::printf("  --gt7-desktop-height <value>         Internal GT7 3D height: native, 1080, 1440, 2160.\n");
+	::printf("  --gt7-vr-scale <value>               GT7 eye render scale: 100, 110, 120, 125; requires --vr.\n");
+	::printf("  --gt7-check-only                     Validate the selected GT7 profile without starting the game.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf(
@@ -124,7 +128,7 @@ static void PrintUsage() {
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf(
 	    "  --hide-cursor                        Hide the cursor after 2 s idle. Default: off.\n");
-	::printf("  --vr                                 Enable the virtual VR headset.\n");
+	::printf("  --vr                                 Enable the SteamVR headset bridge.\n");
 	::printf("  --amd-cpu                            Apply AMD CPU instruction patches.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
@@ -257,7 +261,8 @@ static bool ParseUserId(const std::string& value, int32_t& out) {
 	return true;
 }
 
-static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help) {
+static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help,
+                      Loader::Gt7Profile::Request& gt7) {
 	show_help = false;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	// Round 149: red zone protection is on unless --no-redzone is given. Guest code may keep data
@@ -273,6 +278,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--help" || arg == "-h") {
 			show_help = true;
+			continue;
+		}
+		if (arg == "--gt7-check-only") {
+			gt7.check_only = true;
 			continue;
 		}
 
@@ -378,6 +387,22 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				         value.c_str());
 				return false;
 			}
+		} else if (arg == "--gt7-desktop-height") {
+			uint32_t height = 0;
+			if (gt7.desktop_height >= 0 || (value != "native" &&
+			    (!ParseUint32(value, height) || (height != 1080 && height != 1440 && height != 2160)))) {
+				::printf("invalid or duplicate GT7 desktop height: %s\n", value.c_str());
+				return false;
+			}
+			gt7.desktop_height = static_cast<int>(height);
+		} else if (arg == "--gt7-vr-scale") {
+			uint32_t scale = 0;
+			if (gt7.vr_scale || !ParseUint32(value, scale) ||
+			    (scale != 100 && scale != 110 && scale != 120 && scale != 125)) {
+				::printf("invalid or duplicate GT7 VR scale: %s\n", value.c_str());
+				return false;
+			}
+			gt7.vr_scale = static_cast<int>(scale);
 		} else if (arg == "--game-patch") {
 			if (!options.game_patch.empty()) {
 				::printf("--game-patch can only be specified once\n");
@@ -555,6 +580,12 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	if (options.config.gpu_assisted_validation_enabled) {
 		options.config.vulkan_validation_enabled = true;
 	}
+	std::string profile_error;
+	if (!show_help && !Loader::Gt7Profile::ValidateRequest(gt7, options.config.vr_enabled,
+	        !options.game_patch.empty(), profile_error)) {
+		::printf("GT7 profile: %s\n", profile_error.c_str());
+		return false;
+	}
 
 	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
 }
@@ -637,7 +668,46 @@ static void InitCudaEarly() {
 }
 #endif
 
+static bool PrepareGt7Profile(const Loader::Gt7Profile::Request& request,
+                              RunOptions& options, const char* executable) {
+	if (!request.Active()) return true;
+	std::filesystem::path executable_path = Common::PathFromUtf8(executable);
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	std::vector<wchar_t> module_path(32768);
+	const auto length = GetModuleFileNameW(nullptr, module_path.data(), static_cast<DWORD>(module_path.size()));
+	if (length == 0 || length >= module_path.size()) {
+		::printf("GT7 profile: cannot resolve the running executable path\n");
+		return false;
+	}
+	executable_path = std::wstring(module_path.data(), length);
+#endif
+	std::string error;
+	const auto eboot = options.app0_dir / options.elf.filename();
+	const auto directory = std::filesystem::absolute(executable_path).parent_path() / "patches" / "GT7";
+	if (!Loader::Gt7Profile::Prepare(request, eboot, directory, options.game_patch, error)) {
+		::printf("GT7 profile: %s\n", error.c_str());
+		return false;
+	}
+	::printf("GT7 profile: verified eboot SHA-256 and original bytes; %s; disk game unchanged\n",
+	         options.game_patch.filename().string().c_str());
+	::printf("GT7 profile: internal height=%d VR scale=%d; output=%ux%u (independent window size)\n",
+	         request.desktop_height, request.vr_scale, options.config.screen_width, options.config.screen_height);
+	return true;
+}
+
 static int Main(int argc, char* argv[]) {
+	// A pure preflight path: no virtual-address reservations, SteamVR initialization,
+	// crash reporter, cache writes, or guest execution.
+	bool preflight = false;
+	for (int i = 1; i < argc; ++i) preflight |= std::strcmp(argv[i], "--gt7-check-only") == 0;
+	if (preflight) {
+		RunOptions options;
+		Loader::Gt7Profile::Request request;
+		bool help = false;
+		if (!ParseArgs(argc, argv, options, help, request)) return 1;
+		if (help) { PrintUsage(); return 0; }
+		return PrepareGt7Profile(request, options, argv[0]) ? 0 : 1;
+	}
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	InitCudaEarly();
 #endif
@@ -653,13 +723,14 @@ static int Main(int argc, char* argv[]) {
 
 	RunOptions options;
 	bool       show_help = false;
+	Loader::Gt7Profile::Request gt7;
 
 	if (argc < 2) {
 		PrintUsage();
 		return 0;
 	}
 
-	if (!ParseArgs(argc, argv, options, show_help)) {
+	if (!ParseArgs(argc, argv, options, show_help, gt7)) {
 		PrintUsage();
 		return 1;
 	}
@@ -669,6 +740,7 @@ static int Main(int argc, char* argv[]) {
 		return 0;
 	}
 
+	if (!PrepareGt7Profile(gt7, options, argv[0])) return 1;
 	Run(options);
 
 	return 0;

@@ -21,6 +21,8 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "graphics/vr/openvrBridge.h"
+#include "graphics/vr/vrEyeImage.h"
 
 // A private copy for the frame dump (libPngEnc.cpp has its own, without file output).
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -37,6 +39,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -48,20 +51,34 @@ struct Presenter::Frame {
 	VulkanImage   image;
 	vk::ImageView view         = nullptr;
 	uint64_t      present_tick = 0;
+	uint64_t      vr_present_tick = 0;
+	vk::Semaphore vr_producer_semaphore = nullptr;
+	uint64_t      vr_producer_tick = 0;
 	bool          busy         = false;
+	Frame*        vr_right     = nullptr;
+	Vr::Pose      vr_render_pose {};
+	bool          vr_has_render_pose = false;
+	bool          vr_gamma = true;
 
 	void Configure(GraphicContext& graphics, vk::Extent2D extent, vk::Format format);
 	void Transit(vk::CommandBuffer command, vk::ImageLayout layout, vk::AccessFlags2 access);
-	void CopyFrom(CommandBuffer& command, Image& source);
+	void CopyFrom(CommandBuffer& command, Image& source, uint32_t base_layer = 0, bool convert = false);
 	void Clear(CommandBuffer& command, const vk::ClearColorValue& color);
 };
 
 class FramePool final {
 public:
 	FramePool(WindowContext& window, CommandScheduler& scheduler)
-	    : m_window(window), m_scheduler(scheduler) {}
+	    : m_window(window), m_scheduler(scheduler) {
+		if (window.graphic_ctx.vr_queue != nullptr) {
+			m_vr_master = std::make_unique<MasterSemaphore>(window.graphic_ctx);
+		}
+	}
 	~FramePool() {
 		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
+		if (m_vr_master) {
+			m_vr_master->Wait(m_vr_master->CurrentTick() - 1);
+		}
 		for (auto& frame: m_frames) {
 			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
 			if (frame->image.image != nullptr) {
@@ -132,8 +149,49 @@ public:
 		frame->busy = true;
 		m_mutex.Unlock();
 
-		m_scheduler.Wait(frame->present_tick);
+		WaitForPresent(*frame);
 		return frame;
+	}
+
+	void WaitForPresent(const Presenter::Frame& frame) {
+		m_scheduler.Wait(frame.present_tick);
+		if (m_vr_master) { m_vr_master->Wait(frame.vr_present_tick); }
+	}
+
+	// The caller owns vr_queue_mutex. Even when Complete() has observed GPU completion,
+	// a real semaphore wait supplies the cross-queue memory dependency for the eye copies.
+	void WaitVrProducer(const Presenter::Frame& frame) {
+		EXIT_IF(!m_vr_master || frame.vr_producer_semaphore == nullptr || frame.vr_producer_tick == 0);
+		vk::TimelineSemaphoreSubmitInfo timeline {};
+		timeline.waitSemaphoreValueCount = 1;
+		timeline.pWaitSemaphoreValues = &frame.vr_producer_tick;
+		const vk::PipelineStageFlags stage = vk::PipelineStageFlagBits::eAllCommands;
+		vk::SubmitInfo submit {};
+		submit.pNext = &timeline;
+		submit.waitSemaphoreCount = 1;
+		submit.pWaitSemaphores = &frame.vr_producer_semaphore;
+		submit.pWaitDstStageMask = &stage;
+		RequireVulkanSuccess(m_window.graphic_ctx.vr_queue.submit(1, &submit, nullptr),
+		                     "wait for SteamVR eye-image producer");
+	}
+
+	// Signal after both compositor copies (including partial failures) on that same queue.
+	// Each eye retains the value independently, so arbitrary pool reuse remains safe.
+	void RetireVrPair(Presenter::Frame& frame) {
+		EXIT_IF(!m_vr_master || frame.vr_right == nullptr);
+		const uint64_t tick = m_vr_master->NextTick();
+		const vk::Semaphore semaphore = m_vr_master->Handle();
+		vk::TimelineSemaphoreSubmitInfo timeline {};
+		timeline.signalSemaphoreValueCount = 1;
+		timeline.pSignalSemaphoreValues = &tick;
+		vk::SubmitInfo submit {};
+		submit.pNext = &timeline;
+		submit.signalSemaphoreCount = 1;
+		submit.pSignalSemaphores = &semaphore;
+		RequireVulkanSuccess(m_window.graphic_ctx.vr_queue.submit(1, &submit, nullptr),
+		                     "retire SteamVR eye-image copies");
+		frame.vr_present_tick = tick;
+		frame.vr_right->vr_present_tick = tick;
 	}
 
 	void ValidateForPresent(Presenter::Frame* frame) {
@@ -153,11 +211,18 @@ public:
 		}
 		frame->busy = false;
 		m_free.push_back(frame);
+		if (auto* right = std::exchange(frame->vr_right, nullptr)) {
+			EXIT_IF(right == frame || !right->busy || right->vr_right != nullptr);
+			right->busy = false;
+			m_free.push_back(right);
+		}
+		frame->vr_has_render_pose = false;
 	}
 
 private:
 	WindowContext&                                 m_window;
 	CommandScheduler&                              m_scheduler;
+	std::unique_ptr<MasterSemaphore>                m_vr_master;
 	Common::Mutex                                  m_mutex;
 	std::vector<std::unique_ptr<Presenter::Frame>> m_frames;
 	std::vector<Presenter::Frame*>                 m_free;
@@ -246,20 +311,32 @@ void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout
 	image.subresource_states.clear();
 }
 
-void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
+void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source, uint32_t base_layer, bool convert) {
 	command_buffer.EndRendering();
 	auto command = command_buffer.Handle();
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command);
 	Transit(command, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite);
 	vk::ImageCopy copy {};
-	copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, source.backing.layers};
+	EXIT_IF(base_layer >= source.backing.layers);
+	copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, base_layer, 1};
 	copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, image.layers};
 	copy.extent         = {std::min(source.backing.extent.width, image.extent.width),
 	                       std::min(source.backing.extent.height, image.extent.height), 1};
 	EXIT_IF(copy.srcSubresource.layerCount != copy.dstSubresource.layerCount);
-	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
-	                  vk::ImageLayout::eTransferDstOptimal, copy);
+	if (convert) {
+		vk::ImageBlit blit {};
+		blit.srcSubresource = copy.srcSubresource;
+		blit.dstSubresource = copy.dstSubresource;
+		blit.srcOffsets[1] = vk::Offset3D {static_cast<int32_t>(copy.extent.width),
+		                                  static_cast<int32_t>(copy.extent.height), 1};
+		blit.dstOffsets[1] = blit.srcOffsets[1];
+		command.blitImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
+		                  vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eNearest);
+	} else {
+		command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
+		                  vk::ImageLayout::eTransferDstOptimal, copy);
+	}
 }
 
 void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColorValue& color) {
@@ -539,7 +616,7 @@ struct Presenter::Impl {
 		frames.SetFormat(swapchain.Format());
 	}
 
-	Image& ResolveSurface(const ImageInfo& info) {
+	Image& ResolveSurface(const ImageInfo& info, uint32_t* resolved_layer = nullptr) {
 		TextureCache::ImageDesc desc {};
 		desc.info                  = info;
 		desc.view_info.format      = info.pixel_format;
@@ -547,19 +624,21 @@ struct Presenter::Impl {
 		desc.view_info.aspect      = vk::ImageAspectFlagBits::eColor;
 		desc.view_info.base_level  = 0;
 		desc.view_info.level_count = 1;
-		desc.view_info.base_layer  = 0;
+		desc.view_info.base_layer  = resolved_layer != nullptr ? *resolved_layer : 0;
 		desc.view_info.layer_count = 1;
 		desc.view_info.usage       = vk::ImageUsageFlagBits::eTransferSrc;
 		desc.type                  = TextureCache::BindingType::VideoOut;
 
 		auto&      cache      = renderer.GetTextureCache();
 		const auto image_id   = cache.FindImage(desc);
+		if (resolved_layer != nullptr) { *resolved_layer = desc.view_info.base_layer; }
 		auto&      image      = cache.GetImage(image_id);
 		image.usage.video_out = true;
 		cache.UpdateImage(image_id);
 		return image;
 	}
 	void Present();
+	void PresentVr(Frame& frame);
 
 	RenderContext&        renderer;
 	WindowContext&        window;
@@ -1173,6 +1252,91 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	return *frame;
 }
 
+Presenter::Frame* Presenter::PrepareVrFrame(CommandBuffer& buffer,
+    const std::array<ShaderTextureResource, 2>& eyes, const Vr::Pose* render_pose) {
+	if (!Config::VrEnabled() || !Vr::HostBridge().Active()) { return nullptr; }
+	Vr::Pose checked_pose;
+	if (render_pose == nullptr) { return nullptr; }
+	checked_pose = *render_pose;
+	if (!Vr::NormalizePose(checked_pose)) { return nullptr; }
+	std::array<ImageInfo, 2> infos;
+	std::array<uint32_t, 2> slices {};
+	if (!Vr::DescribeEyeImages(eyes, infos, slices)) {
+		static std::atomic<uint32_t> rejected {0};
+		const auto n = ++rejected;
+		if (n <= 8 || (n & (n - 1)) == 0) {
+			LOGF("SteamVR: rejected unsupported guest stereo descriptors (%u)\n", n);
+		}
+		return nullptr;
+	}
+	std::array<Frame*, 2> frames {};
+	const bool convert = infos[0].pixel_format == vk::Format::eA2B10G10R10UnormPack32 ||
+	                     infos[0].pixel_format == vk::Format::eA2R10G10B10UnormPack32;
+	// Explicit compatibility comparison: keep encoded values, only quantize storage.
+	// An sRGB destination would encode them again; do not use one for this blit.
+	static const bool use_rgba8 = [] {
+		const auto* value = std::getenv("KYTY_VR_EYE_OUTPUT");
+		return value != nullptr && std::string(value) == "rgba8";
+	}();
+	const auto output_format = convert ? (use_rgba8 ? vk::Format::eR8G8B8A8Unorm :
+	                                                  vk::Format::eR16G16B16A16Sfloat)
+	                                   : infos[0].pixel_format;
+	const auto& graphics = m_impl->window.graphic_ctx;
+	if (convert &&
+	    ((graphics.GetFormatProperties(infos[0].pixel_format).optimalTilingFeatures &
+	      vk::FormatFeatureFlagBits::eBlitSrc) == vk::FormatFeatureFlags{} ||
+	     (graphics.GetFormatProperties(output_format).optimalTilingFeatures &
+	      vk::FormatFeatureFlagBits::eBlitDst) == vk::FormatFeatureFlags{})) {
+		LOGF("SteamVR: GPU cannot convert packed 10-bit eye images\n");
+		return nullptr;
+	}
+	for (size_t eye = 0; eye < frames.size(); ++eye) {
+		frames[eye] = m_impl->frames.Acquire({infos[eye].extent.width, infos[eye].extent.height},
+		                                   output_format);
+	}
+	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
+	// DescribeEyeImages proves both descriptors refer to the same two-layer image.
+	// Resolve once: an alias may shift its base layer in the cache.
+	auto& source = m_impl->ResolveSurface(infos[0], &slices[0]);
+	slices[1] = slices[0] + 1;
+	if (source.backing.extent.width != infos[0].extent.width ||
+	    source.backing.extent.height != infos[0].extent.height ||
+	    slices[1] >= source.backing.layers) {
+		for (auto* frame: frames) { m_impl->frames.Release(frame); }
+		LOGF("SteamVR: stereo image alias does not match the guest eye extent/layer\n");
+		return nullptr;
+	}
+	for (size_t eye = 0; eye < frames.size(); ++eye) {
+		frames[eye]->Configure(m_impl->window.graphic_ctx,
+		                       {infos[eye].extent.width, infos[eye].extent.height},
+		                       output_format);
+		frames[eye]->CopyFrom(buffer, source, slices[eye], convert);
+		// A UNORM conversion changes storage precision, not the color transfer curve.
+		frames[eye]->vr_gamma = convert || output_format != vk::Format::eR16G16B16A16Sfloat;
+		frames[eye]->Transit(buffer.Handle(), vk::ImageLayout::eTransferSrcOptimal,
+		                     vk::AccessFlagBits2::eTransferRead);
+		frames[eye]->present_tick = 0;
+		frames[eye]->vr_present_tick = 0;
+	}
+	// Read the actual command buffer's scheduler, not a guessed default render scheduler.
+	// The pending tick is signaled after all copies/transitions recorded above.
+	auto& producer = buffer.GetScheduler();
+	frames[0]->vr_producer_semaphore = producer.GetMasterSemaphore().Handle();
+	frames[0]->vr_producer_tick = producer.CurrentTick();
+	frames[0]->vr_right = frames[1];
+	frames[0]->vr_has_render_pose = true;
+	frames[0]->vr_render_pose = checked_pose;
+	static bool described = false;
+	if (!described) {
+		described = true;
+		std::printf("SteamVR eyes prepared: guest_format=%d output_format=%d extent=%ux%u layers=%u/%u convert=%d gamma=%d\n",
+		     static_cast<int>(infos[0].pixel_format), static_cast<int>(output_format),
+		     infos[0].extent.width, infos[0].extent.height, slices[0], slices[1], convert, frames[0]->vr_gamma);
+		std::fflush(stdout);
+	}
+	return frames[0];
+}
+
 Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, bool opaque,
                                                CommandBuffer* producer) {
 	KYTY_PROFILER_FUNCTION();
@@ -1224,7 +1388,14 @@ void Presenter::Present(Frame& frame) {
 
 void Presenter::Present(std::span<const Layer> layers) {
 	Common::LockGuard lock(m_impl->present_mutex);
+	bool desktop_changed = false;
 	for (const auto& layer: layers) {
+		if (layer.bus == 0x20) {
+			// A missing verified stereo submission still completes its guest flip.
+			// Never substitute or replay a desktop image into the headset.
+			if (layer.frame != nullptr) { m_impl->PresentVr(*layer.frame); }
+			continue;
+		}
 		EXIT_IF(layer.bus < 0 || layer.bus >= static_cast<int>(m_impl->layers.size()));
 		m_impl->frames.ValidateForPresent(layer.frame);
 		auto& previous = m_impl->layers[layer.bus];
@@ -1237,7 +1408,9 @@ void Presenter::Present(std::span<const Layer> layers) {
 			m_impl->frames.Release(previous.frame);
 		}
 		previous = layer;
+		desktop_changed = true;
 	}
+	if (!desktop_changed) { return; }
 	const auto presented =
 	    m_impl->window.graphic_ctx.presented_frames.fetch_add(1, std::memory_order_relaxed) + 1;
 	Timeline::Present(presented);
@@ -1245,6 +1418,75 @@ void Presenter::Present(std::span<const Layer> layers) {
 	Common::PerfStats::AddPresent();
 	StallWatch::UpdateMemoryText(m_impl->window.graphic_ctx);
 	m_impl->Present();
+}
+
+void Presenter::Impl::PresentVr(Frame& frame) {
+	frames.ValidateForPresent(&frame);
+	if (frame.vr_right == nullptr || !Vr::HostBridge().Active()) {
+		frames.Release(&frame);
+		return;
+	}
+	frames.ValidateForPresent(frame.vr_right);
+	auto& graphics = window.graphic_ctx;
+	auto make_eye = [](const Frame& source) {
+		Vr::EyeTexture eye;
+		eye.image = source.image.image;
+		eye.width = source.image.extent.width;
+		eye.height = source.image.extent.height;
+		eye.format = static_cast<VkFormat>(source.image.format);
+		eye.usage = static_cast<VkImageUsageFlags>(source.image.usage);
+		eye.layout = static_cast<VkImageLayout>(source.image.state.layout);
+		eye.gamma = source.vr_gamma;
+		return eye;
+	};
+	const auto left = make_eye(frame);
+	const auto right = make_eye(*frame.vr_right);
+	Vr::FramePose predicted;
+	Vr::SubmitResult submitted;
+	uint64_t retirement_tick = 0;
+	const bool dedicated = graphics.vr_queue != nullptr;
+	{
+		// Complete() only exposes this frame after its producer GPU work has finished.
+		// Default WaitGetPoses may use the bound queue. A separate same-family queue
+		// keeps its wait from holding the rendering queue's submission mutex.
+		Common::LockGuard queue_lock(dedicated ? graphics.vr_queue_mutex : graphics.queue_mutex);
+		auto status = Vr::HostBridge().WaitFrame(predicted);
+		if (status) {
+			if (dedicated) { frames.WaitVrProducer(frame); }
+			submitted = Vr::HostBridge().SubmitStereo(predicted, left, right,
+			    Vr::StereoSource::GuestSeparateEyes,
+			    frame.vr_has_render_pose ? &frame.vr_render_pose : nullptr);
+			if (submitted.queue_may_have_work) {
+				(void)Vr::HostBridge().PostPresentHandoff();
+				if (dedicated) { frames.RetireVrPair(frame); }
+			}
+		} else {
+			submitted.status = std::move(status);
+		}
+	}
+	if (!dedicated && submitted.queue_may_have_work) {
+		// This timeline signal includes earlier work on the same queue, including both
+		// compositor copies and partial/failed submits. Reuse waits in FramePool::Acquire;
+		// pool destruction waits the scheduler's latest tick. No CPU wait is needed here.
+		// Release queue_mutex first: scheduler submission takes it under the render lock.
+		Common::LockGuard render_lock(renderer.GetMutex());
+		present_scheduler.BeginCommand();
+		retirement_tick = present_scheduler.Submit();
+		frame.present_tick = retirement_tick;
+		frame.vr_right->present_tick = retirement_tick;
+	}
+	static uint64_t accepted = 0, rejected = 0;
+	if (submitted.status) {
+		if (++accepted == 1 || accepted % 300 == 0) {
+			LOGF("SteamVR stereo: accepted=%" PRIu64 " eye=%ux%u render_pose=%d\n",
+			     accepted, left.width, left.height, frame.vr_has_render_pose);
+		}
+	} else if (++rejected <= 8 || (rejected & (rejected - 1)) == 0) {
+		LOGF("SteamVR stereo rejected (%" PRIu64 "): %s; eye=%ux%u format=%d usage=0x%x layout=%d\n",
+		     rejected, submitted.status.message.c_str(), left.width, left.height,
+		     static_cast<int>(left.format), left.usage, static_cast<int>(left.layout));
+	}
+	frames.Release(&frame);
 }
 
 void Presenter::ClearLayer(int bus) {

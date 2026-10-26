@@ -11603,7 +11603,7 @@ void TestNewShaderRecompilerClipDisabledPosition() {
   const auto clipped_result = compile(clipped);
   CheckSpirvBinaryValidates(clipped_result.spirv);
   Check(SpirvInstructionOpcodeCount(regular_result.spirv, 136u) == 0u &&
-            SpirvInstructionOpcodeCount(clipped_result.spirv, 133u) == 2u &&
+            SpirvInstructionOpcodeCount(clipped_result.spirv, 133u) == 4u &&
             SpirvInstructionOpcodeCount(clipped_result.spirv, 129u) == 2u &&
             SpirvInstructionOpcodeCount(clipped_result.spirv, 136u) == 2u &&
             SpirvInstructionOpcodeCount(clipped_result.spirv, 131u) == 2u,
@@ -11618,6 +11618,29 @@ void TestNewShaderRecompilerClipDisabledPosition() {
   shifted.clip_space.offset[0] += 1.0f;
   Check(MakeStageStaticKey(clipped) != MakeStageStaticKey(shifted),
         "clip-disabled viewport transform is absent from the shader cache key");
+}
+
+void TestNewShaderRecompilerVtePositionFormats() {
+  const uint32_t shader[] = {
+      EncodeExp0(0x0c, 0xf), EncodeExp1(0, 1, 2, 3), 0xbf810000u,
+  };
+  std::vector<std::vector<uint32_t>> keys;
+  for (uint32_t format = 0; format < 8; ++format) {
+    ShaderVertexInputInfo vertex{};
+    vertex.clip_space.position_format = format << 8;
+    auto options = MakeCompileOptions(ShaderType::Vertex);
+    options.input_info.vertex = &vertex;
+    const auto result = RecompileForTest(shader, options);
+    CheckSpirvBinaryValidates(result.spirv);
+    Check(SpirvInstructionOpcodeCount(result.spirv, 136u) == ((format & 4u) ? 0u : 1u) &&
+              SpirvInstructionOpcodeCount(result.spirv, 133u) ==
+                  ((format & 1u) ? 2u : 0u) + ((format & 2u) ? 1u : 0u),
+          "VTE position formats did not restore the Vulkan homogeneous coordinates");
+    const auto key = MakeStageStaticKey(vertex);
+    Check(std::ranges::find(keys, key) == keys.end(),
+          "distinct VTE position formats shared a shader cache key");
+    keys.push_back(key);
+  }
 }
 
 void TestNewShaderRecompilerAuxPositionExports() {
@@ -15301,10 +15324,20 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
 } // namespace
 } // namespace Libs::Graphics
 
-int main() {
+int main(int argc, char** argv) {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  if (argc == 2 && std::strcmp(argv[1], "--vte-only") == 0) {
+    TestNewShaderRecompilerClipDisabledPosition();
+    TestNewShaderRecompilerVtePositionFormats();
+    std::puts("ShaderCfgTests: VTE tests passed");
+    return 0;
+  }
+  if (argc != 1) {
+    std::fprintf(stderr, "Usage: %s [--vte-only]\n", argv[0]);
+    return 2;
+  }
   TestRayTracingInstructions();
   TestDeclaredShaderHashMarker();
   TestResourceDescriptorClassification();
@@ -15325,6 +15358,7 @@ int main() {
   TestVertexBufferGrouping();
   TestNggVertexEntryState();
   TestNewShaderRecompilerClipDisabledPosition();
+  TestNewShaderRecompilerVtePositionFormats();
   TestNewShaderRecompilerAuxPositionExports();
   TestNewShaderRecompilerNativeWideScalarMemoryIr();
   TestNewShaderRecompilerNativeWideBufferIr();

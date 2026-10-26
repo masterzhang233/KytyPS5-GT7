@@ -184,6 +184,11 @@ struct GraphicContext {
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
 	vk::Queue                          queue        = nullptr;
+	// Optional second graphics-family queue, reserved exclusively for SteamVR. Default
+	// WaitGetPoses may submit work, so it must not hold up the guest rendering queue.
+	// Null preserves the shared-queue path. This never aliases the readback queue.
+	Common::Mutex                      vr_queue_mutex;
+	vk::Queue                          vr_queue = nullptr;
 	// The queue for game threads' reads of bytes the GPU has finished writing (BufferCache's fast
 	// readback, ReadbackQueue), and its family: the copy engines' (transfer-only) family when the
 	// device has one, else the universal family's second queue; null with KYTY_FAST_READBACK=0 or

@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/viewportTransform.h"
 #include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -82,6 +83,7 @@ struct ShaderClipSpaceTransform {
 	float scale[2]       = {};
 	float offset[2]      = {};
 	float half_extent[2] = {};
+	uint32_t position_format = ViewportTransform::IncomingW;
 	bool  enabled        = false;
 };
 

@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>428</width>
-    <height>454</height>
+    <width>900</width>
+    <height>650</height>
    </rect>
   </property>
   <property name="minimumSize">
@@ -17,7 +17,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string>KytyPS5 Launcher</string>
+   <string>KytyPS5 GT7 - VR &amp; Render | masterzhang233</string>
   </property>
   <property name="locale">
    <locale language="English" country="UnitedStates"/>
@@ -25,6 +25,57 @@
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0">
     <layout class="QVBoxLayout" name="verticalLayout_5">
+     <item>
+      <widget class="QFrame" name="gt7_feature_panel">
+       <layout class="QVBoxLayout" name="gt7FeatureLayout">
+        <property name="spacing"><number>8</number></property>
+        <item>
+         <layout class="QHBoxLayout" name="gt7TitleLayout">
+          <item>
+           <widget class="QLabel" name="gt7_feature_title">
+            <property name="text"><string>GT7  /  VR &amp; Render</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="gt7_feature_credit">
+            <property name="text"><string>masterzhang233 · based on KytyPS5-GT7</string></property>
+            <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QLabel" name="gt7_feature_summary">
+          <property name="text"><string>Select GT7 to configure internal 3D resolution or launch SteamVR.</string></property>
+          <property name="wordWrap"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="gt7ActionLayout">
+          <item>
+           <widget class="QPushButton" name="gt7_start_vr_button">
+            <property name="text"><string>Start in SteamVR</string></property>
+            <property name="toolTip"><string>Selects VR mode and starts the selected GT7 game after version and patch verification. Connect your headset in SteamVR first.</string></property>
+            <property name="autoDefault"><bool>false</bool></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="gt7_settings_button">
+            <property name="text"><string>VR &amp;&amp; render settings</string></property>
+            <property name="autoDefault"><bool>false</bool></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="gt7_feature_hint">
+            <property name="text"><string>Internal 3D size and window output are separate.</string></property>
+            <property name="wordWrap"><bool>true</bool></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout_3">
        <item>

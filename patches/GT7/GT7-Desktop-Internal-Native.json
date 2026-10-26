@@ -1,0 +1,23 @@
+{
+  "id": "PPSA01317",
+  "version": "01.710.000",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "Desktop internal scene scale candidate: native",
+      "enabled": true,
+      "memory": []
+    }
+  ],
+  "desktop_scene_scale": {
+    "status": "offline-verified candidate; full-game target sizes and image quality NOT yet validated",
+    "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf",
+    "nominal_height_at_2160_output": null,
+    "scale": null,
+    "method": "Override desktop min/max scale input; retain native target sizing and reconstruction",
+    "caveats": "Native per-scene factors, PS5 Pro rounding and special passes may change effective sizes. Does not force LOD, shadows, output dimensions or GPU allocation size. Not a measured FPS improvement. No VR branch writes."
+  },
+  "strict_main_module": true,
+  "main_module_source_base": 0,
+  "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf"
+}

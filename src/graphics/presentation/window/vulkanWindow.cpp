@@ -21,6 +21,9 @@
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "graphics/vr/openvrBridge.h"
+#include "graphics/vr/openvrRuntimePath.h"
+#include "graphics/vr/vrQueueSelection.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "kernel/memory.h"
 #include "libs/controller.h"
@@ -435,6 +438,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 // The family VulkanCreateDevice asked the readback queue of (ReadbackQueue), or -1: none.
 static uint32_t g_readback_family = static_cast<uint32_t>(-1);
+static uint32_t g_vr_queue_index = UINT32_MAX;
 
 static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	                                 const std::vector<const char*>& device_extensions) {
@@ -476,11 +480,18 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	} else if (!readback_off && family_queues >= 2) {
 		g_readback_family = queue_family;
 	}
-	const float                              queue_priorities[2] = {1.0f, 1.0f};
+	const char* vr_dedicated = std::getenv("KYTY_VR_DEDICATED_QUEUE");
+	g_vr_queue_index = Vr::SelectDedicatedQueue(Config::VrEnabled() &&
+	    !(vr_dedicated != nullptr && vr_dedicated[0] == '0'), family_queues,
+	    g_readback_family == queue_family);
+	const float                              queue_priorities[3] = {1.0f, 1.0f, 1.0f};
 	std::array<vk::DeviceQueueCreateInfo, 2> queue_create_infos {};
 	uint32_t                                 queue_create_count = 1;
 	queue_create_infos[0].queueFamilyIndex                      = queue_family;
 	queue_create_infos[0].queueCount       = g_readback_family == queue_family ? 2u : 1u;
+	if (g_vr_queue_index != UINT32_MAX) {
+		queue_create_infos[0].queueCount = g_vr_queue_index + 1u;
+	}
 	queue_create_infos[0].pQueuePriorities = queue_priorities;
 	if (g_readback_family != static_cast<uint32_t>(-1) && g_readback_family != queue_family) {
 		queue_create_infos[1].queueFamilyIndex = g_readback_family;
@@ -1161,6 +1172,35 @@ void WindowContext::CreateVulkan() {
 	VulkanExtensions r;
 	VulkanGetExtensions(r);
 	VulkanCheckInstanceVersion();
+	std::vector<std::string> vr_instance_extensions;
+	std::vector<std::string> vr_device_extensions;
+	if (Config::VrEnabled()) {
+		std::filesystem::path runtime;
+		std::string runtime_error;
+		if (!Vr::FindOpenVrRuntimeDll(runtime, runtime_error)) {
+			EXIT("SteamVR runtime discovery failed: %s\n", runtime_error.c_str());
+		}
+		auto& bridge = Vr::HostBridge();
+		auto status = bridge.Initialize(runtime);
+		if (!status) { EXIT("SteamVR initialization failed: %s\n", status.message.c_str()); }
+		status = bridge.RequiredInstanceExtensions(vr_instance_extensions);
+		if (!status) { EXIT("SteamVR instance extensions: %s\n", status.message.c_str()); }
+		for (const auto& extension: vr_instance_extensions) {
+			if (!HasExtension(r.available_extensions, extension.c_str())) {
+				EXIT("SteamVR requires unavailable Vulkan instance extension %s\n", extension.c_str());
+			}
+			if (std::none_of(r.required_extensions.begin(), r.required_extensions.end(),
+			                 [&](const char* value) { return extension == value; })) {
+				r.required_extensions.push_back(extension.c_str());
+			}
+		}
+		Vr::HeadsetInfo headset;
+		status = bridge.ReadHeadset(headset);
+		if (!status || !headset.connected) { EXIT("SteamVR headset is not connected\n"); }
+		LOGF("SteamVR connected: %s, recommended eye %ux%u, refresh %.2f Hz\n",
+		     headset.model.c_str(), headset.recommended_eye_width,
+		     headset.recommended_eye_height, headset.display_frequency_hz);
+	}
 
 	vk::ApplicationInfo app_info {};
 	app_info.pApplicationName   = "Kyty";
@@ -1295,6 +1335,27 @@ void WindowContext::CreateVulkan() {
 
 	if (graphic_ctx.physical_device == nullptr) {
 		EXIT("Could not find suitable device:%s", rejected_devices.c_str());
+	}
+	if (Config::VrEnabled()) {
+		VkPhysicalDevice required = VK_NULL_HANDLE;
+		auto& bridge = Vr::HostBridge();
+		auto status = bridge.RequiredPhysicalDevice(graphic_ctx.instance, required);
+		if (!status || required != static_cast<VkPhysicalDevice>(graphic_ctx.physical_device)) {
+			EXIT("SteamVR and emulator must use the same Vulkan GPU: %s\n", status.message.c_str());
+		}
+		status = bridge.RequiredDeviceExtensions(required, vr_device_extensions);
+		if (!status) { EXIT("SteamVR device extensions: %s\n", status.message.c_str()); }
+		const auto available = graphic_ctx.physical_device.enumerateDeviceExtensionProperties();
+		RequireVulkanSuccess(available.result, "enumerate SteamVR device extensions");
+		for (const auto& extension: vr_device_extensions) {
+			if (!HasExtension(available.value, extension.c_str())) {
+				EXIT("SteamVR requires unavailable Vulkan device extension %s\n", extension.c_str());
+			}
+			if (std::none_of(device_extensions.begin(), device_extensions.end(),
+			                 [&](const char* value) { return extension == value; })) {
+				device_extensions.push_back(extension.c_str());
+			}
+		}
 	}
 
 	vk::PhysicalDevicePushDescriptorProperties push_descriptor_properties {};
@@ -1465,6 +1526,22 @@ void WindowContext::CreateVulkan() {
 	}
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
+	if (g_vr_queue_index != UINT32_MAX) {
+		graphic_ctx.device.getQueue(graphic_ctx.queue_family, g_vr_queue_index,
+		                            &graphic_ctx.vr_queue);
+		EXIT_IF(graphic_ctx.vr_queue == nullptr || graphic_ctx.vr_queue == graphic_ctx.queue);
+	}
+	if (Config::VrEnabled()) {
+		const auto vr_queue = graphic_ctx.vr_queue != nullptr ? graphic_ctx.vr_queue : graphic_ctx.queue;
+		const Vr::VulkanBinding binding {graphic_ctx.instance, graphic_ctx.physical_device,
+		                                graphic_ctx.device, vr_queue, graphic_ctx.queue_family};
+		const auto status = Vr::HostBridge().AttachVulkan(binding);
+		if (!status) { EXIT("SteamVR Vulkan binding failed: %s\n", status.message.c_str()); }
+		std::printf("SteamVR Vulkan queue: %s (graphics family=%u index=%u)\n",
+		     graphic_ctx.vr_queue != nullptr ? "dedicated" : "shared fallback",
+		     graphic_ctx.queue_family, g_vr_queue_index != UINT32_MAX ? g_vr_queue_index : 0u);
+		std::fflush(stdout);
+	}
 	if (g_readback_family != static_cast<uint32_t>(-1)) {
 		const bool universal = g_readback_family == graphic_ctx.queue_family;
 		graphic_ctx.device.getQueue(g_readback_family, universal ? 1u : 0u,
@@ -1520,6 +1597,14 @@ void WindowContext::RecreateSurface() {
 
 WindowContext::~WindowContext() {
 	ShutdownSystemOverlayInput();
+	if (Vr::HostBridge().Active()) {
+		Common::LockGuard queue_lock(graphic_ctx.queue_mutex);
+		Common::LockGuard vr_queue_lock(graphic_ctx.vr_queue_mutex);
+		if (graphic_ctx.device != nullptr) {
+			RequireVulkanSuccess(graphic_ctx.device.waitIdle(), "retire SteamVR image copies");
+		}
+		Vr::HostBridge().Shutdown();
+	}
 	presenter.reset();
 	LibKernel::Memory::InstallGpuResources(nullptr);
 	render_context.reset();
@@ -1530,6 +1615,7 @@ WindowContext::~WindowContext() {
 		graphic_ctx.device.destroy(nullptr);
 		graphic_ctx.device = nullptr;
 		graphic_ctx.queue  = nullptr;
+		graphic_ctx.vr_queue = nullptr;
 	}
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);

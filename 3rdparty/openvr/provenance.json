@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/ValveSoftware/openvr",
+  "tag": "v2.5.1",
+  "commit": "ae46a8dd0172580648c8922658a100439115d3eb",
+  "files": {
+    "openvr.h": {
+      "url": "https://raw.githubusercontent.com/ValveSoftware/openvr/ae46a8dd0172580648c8922658a100439115d3eb/headers/openvr.h",
+      "sha256": "94e5545370159c85f87cd6e15dd3739f7c919fc7a6e869f5e4ed463533a07ed0",
+      "bytes": 278805
+    },
+    "LICENSE": {
+      "url": "https://raw.githubusercontent.com/ValveSoftware/openvr/ae46a8dd0172580648c8922658a100439115d3eb/LICENSE",
+      "sha256": "f56ff606104d4ef18e617921a75c73ad73b5a1a1d70c69590c29de16919e04ad",
+      "bytes": 1488
+    }
+  }
+}

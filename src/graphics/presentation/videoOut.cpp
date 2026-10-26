@@ -19,8 +19,10 @@
 #include "graphics/host_gpu/timeline.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/renderDoc.h"
+#include "graphics/vr/openvrBridge.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
+#include "libs/hmd2.h"
 #include "libs/libs.h"
 #include "loader/systemContent.h"
 
@@ -51,6 +53,7 @@ constexpr int      VIDEO_OUT_FALSE                                      = 0;
 constexpr int      VIDEO_OUT_BUS_TYPE_MAIN                              = 0;
 constexpr int      VIDEO_OUT_BUS_TYPE_OVERLAY                           = 1;
 constexpr int      VIDEO_OUT_BUS_TYPE_SUB                               = 2;
+constexpr int      VIDEO_OUT_BUS_TYPE_HMD                               = Hmd2::VIDEO_OUT_BUS;
 constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC                            = 1;
 constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC_MULTI                      = 4;
 constexpr int      VIDEO_OUT_FLIP_MODE_SLAVE                            = 8;
@@ -66,6 +69,7 @@ constexpr uint64_t VIDEO_OUT_REFRESH_RATE_59_94HZ                       = 3;
 constexpr uint64_t VIDEO_OUT_REFRESH_RATE_119_88HZ                      = 13;
 constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED     = 0;
 constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED       = 1;
+constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_HMD_STEREO       = 0x10;
 constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_STRICT_COLORIMETRY = 8;
 constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED = 32;
 
@@ -215,7 +219,7 @@ public:
 	void Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer);
 	void Complete(uint64_t request_id);
 	void WaitForSubmitSlot(VideoOutConfig& cfg);
-	bool Flip(uint32_t micros);
+	bool Flip(uint32_t micros, uint64_t* presented_buses = nullptr);
 	void GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
 	void Wait(VideoOutConfig& cfg, int index);
 
@@ -237,6 +241,7 @@ private:
 		bool                        premultiplied_alpha;
 		// Round 133: the main display keeps the frame it shows (GpuPhases::TakeFrameHold).
 		bool hold = false;
+		bool                        hmd_output;
 	};
 
 	Graphics::Presenter& m_presenter;
@@ -254,7 +259,8 @@ private:
 struct VideoOutDriver::Impl {
 public:
 	static constexpr std::array VIDEO_OUT_BUSES {
-	    VIDEO_OUT_BUS_TYPE_MAIN, VIDEO_OUT_BUS_TYPE_OVERLAY, VIDEO_OUT_BUS_TYPE_SUB};
+	    VIDEO_OUT_BUS_TYPE_MAIN, VIDEO_OUT_BUS_TYPE_OVERLAY, VIDEO_OUT_BUS_TYPE_SUB,
+	    VIDEO_OUT_BUS_TYPE_HMD};
 	static constexpr int VIDEO_OUT_NUM_MAX = VIDEO_OUT_BUSES.size() + 1;
 
 	Impl(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
@@ -662,6 +668,10 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 	if (bus == VIDEO_OUT_BUSES.end()) {
 		return VIDEO_OUT_ERROR_INVALID_VALUE;
 	}
+	if (bus_type == VIDEO_OUT_BUS_TYPE_HMD &&
+	    (!Config::VrEnabled() || !Graphics::Vr::HostBridge().Active())) {
+		return VIDEO_OUT_ERROR_NO_DEVICE;
+	}
 	EXIT_NOT_IMPLEMENTED(index != 0);
 	Common::LockGuard lock(m_mutex);
 
@@ -760,6 +770,9 @@ bool VideoOutDriver::Impl::Close(int handle) {
 	}
 	m_flip_queue.Cancel(config);
 	m_presenter.ClearLayer(config.bus);
+	if (config.bus == VIDEO_OUT_BUS_TYPE_HMD) {
+		Hmd2::ClearStereoFrames();
+	}
 	DeleteVideoOutEvents(flip_events, VideoOutEventKind::Flip);
 	DeleteVideoOutEvents(pre_vblank_events, VideoOutEventKind::PreVblankStart);
 	DeleteVideoOutEvents(vblank_events, VideoOutEventKind::Vblank);
@@ -892,7 +905,19 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 
 		VblankBegin();
-		bool presented = m_flip_queue.Flip(0);
+		bool presented = false;
+		if (Config::VrEnabled()) {
+			// Independent desktop and HMD groups can be ready at the same refresh.
+			// Drain them without forcing each port to consume a separate 60 Hz tick.
+			// Flip preserves FIFO and permits each port at most once this Vblank.
+			uint64_t presented_buses = 0;
+			for (size_t group = 0; group < VIDEO_OUT_BUSES.size(); ++group) {
+				if (!m_flip_queue.Flip(0, &presented_buses)) { break; }
+				presented = true;
+			}
+		} else {
+			presented = m_flip_queue.Flip(0);
+		}
 		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;
@@ -948,7 +973,9 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 				cfg.flip_status.flipPendingNum--;
 				cfg.flip_status.gcQueueNum -= it->source == FlipRequestSource::GpuEop;
 				if (it->state == RequestState::Ready) {
-					m_presenter.Discard(*it->frame);
+					if (it->frame != nullptr) {
+						m_presenter.Discard(*it->frame);
+					}
 					it = queue->erase(it);
 				} else {
 					auto cancelled = it++;
@@ -974,6 +1001,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	r.submit_ptc = LibKernel::KernelGetProcessTimeCounter();
 	r.source     = source;
 	r.state      = RequestState::Reserved;
+	r.hmd_output = cfg.bus == VIDEO_OUT_BUS_TYPE_HMD;
 	if (cfg.slave_count != 0) {
 		for (auto* queue: {&m_requests, &m_cpu_requests}) {
 			for (auto& slave: *queue) {
@@ -1050,6 +1078,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	VideoOutConfig* cfg        = nullptr;
 	uint64_t        generation = 0;
 	int             index      = 0;
+	bool            hmd_output = false;
 	{
 		Common::LockGuard lock(m_mutex);
 		auto request = std::find_if(m_requests.begin(), m_requests.end(),
@@ -1078,6 +1107,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		cfg            = request->cfg;
 		generation     = request->generation;
 		index          = request->index;
+		hmd_output     = request->hmd_output;
 	}
 
 	const bool          special = IsSpecialBufferIndex(index);
@@ -1106,7 +1136,9 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 					     " index=%d group=%d\n",
 					     request_id, index, surface.group_index);
 				}
-				source_info = cfg->groups[surface.group_index].ImageInfo(surface);
+				if (!hmd_output) {
+					source_info = cfg->groups[surface.group_index].ImageInfo(surface);
+				}
 				premultiplied_alpha =
 				    (cfg->groups[surface.group_index].attribute.option &
 				     VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED) != 0;
@@ -1128,7 +1160,27 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	// looked up is not shown (the GPU thread, after the frame's draws).
 	const bool hold =
 	    !special && cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN && Graphics::GpuPhases::TakeFrameHold();
-	if (special) {
+	if (hmd_output) {
+		Hmd2::StereoFrameSnapshot stereo;
+		if (special) {
+			Hmd2::ClearStereoFrames();
+		} else if (Hmd2::TakeStereoFrame(index, stereo)) {
+			Graphics::Vr::Pose render_pose;
+			const bool known_pose = Graphics::Vr::MakeRenderPose(stereo.guest_position.data(),
+			    stereo.guest_orientation.data(), render_pose);
+			if (known_pose) {
+				frame = m_presenter.PrepareVrFrame(buffer, stereo.eyes, &render_pose);
+			} else {
+				static std::atomic<uint32_t> bad_pose_reports {0};
+				if (bad_pose_reports.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF("Hmd2: skipping stereo buffer=%d token=%" PRIu64 " with invalid submitted head pose\n",
+					     index, stereo.frame_token);
+				}
+			}
+		}
+		// Missing/unsupported metadata completes this flip with no eye submission.
+		// In particular, a type-0x12 mono layer is never copied to both eyes.
+	} else if (special) {
 		frame = &m_presenter.PrepareBlankFrame(width, height, index == VIDEO_OUT_BUFFER_INDEX_BLACK,
 		                                       &buffer);
 	} else {
@@ -1162,7 +1214,8 @@ void FlipQueue::Complete(uint64_t request_id) {
 	auto request = std::find_if(m_requests.begin(), m_requests.end(),
 	                            [request_id](const auto& r) { return r.id == request_id; });
 	if (request != m_requests.end()) {
-		if (request->state != RequestState::Recording || request->frame == nullptr) {
+		if (request->state != RequestState::Recording ||
+		    (request->frame == nullptr && !request->hmd_output)) {
 			m_mutex.Unlock();
 			EXIT("completed GPU flip has no prepared recording, id=%" PRIu64 "\n", request_id);
 		}
@@ -1212,7 +1265,7 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	}
 }
 
-bool FlipQueue::Flip(uint32_t micros) {
+bool FlipQueue::Flip(uint32_t micros, uint64_t* presented_buses) {
 	KYTY_PROFILER_BLOCK("FlipQueue::Flip");
 
 	m_mutex.Lock();
@@ -1234,6 +1287,18 @@ bool FlipQueue::Flip(uint32_t micros) {
 	    })) {
 		m_mutex.Unlock();
 		return false;
+	}
+	uint64_t group_buses = 0;
+	if (presented_buses != nullptr) {
+		for (const auto& request: m_requests) {
+			if (request.group != group) { continue; }
+			EXIT_IF(request.cfg->bus < 0 || request.cfg->bus >= 64);
+			group_buses |= uint64_t {1} << request.cfg->bus;
+		}
+		if ((*presented_buses & group_buses) != 0) {
+			m_mutex.Unlock();
+			return false;
+		}
 	}
 	std::array<Request, VideoOutDriver::Impl::VIDEO_OUT_BUSES.size()> requests {};
 	size_t count = 0;
@@ -1264,6 +1329,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	if (due) {
 		m_presenter.Present(std::span(layers.data(), count));
 		Profiler::MarkFrame();
+		if (presented_buses != nullptr) { *presented_buses |= group_buses; }
 	}
 
 	m_mutex.Lock();
@@ -1472,8 +1538,14 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 	if (option != nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_OPTION;
 	}
-	if (category != VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED &&
-	    category != VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED) {
+	bool hmd_output = false;
+	{
+		Common::LockGuard lock(ctx->mutex);
+		hmd_output = ctx->bus == VIDEO_OUT_BUS_TYPE_HMD;
+	}
+	if ((hmd_output && category != VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_HMD_STEREO) ||
+	    (!hmd_output && category != VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED &&
+	     category != VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED)) {
 		return VIDEO_OUT_ERROR_INVALID_CATEGORY;
 	}
 
@@ -1491,14 +1563,26 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 			LOGF("\t buffers[%d]: ignoring reserved fields {%p, %p}\n", i, buffers[i].reserved[0],
 			     buffers[i].reserved[1]);
 		}
-		const auto data_address     = reinterpret_cast<uint64_t>(buffers[i].data);
+		auto data_address = reinterpret_cast<uint64_t>(buffers[i].data);
 		const auto metadata_address = reinterpret_cast<uint64_t>(buffers[i].metadata);
+		if (hmd_output) {
+			std::array<Graphics::ShaderTextureResource, 2> eyes;
+			if (metadata_address != 0 || !Hmd2::ReadRegisteredStereo(buffers[i].data, eyes)) {
+				return VIDEO_OUT_ERROR_INVALID_VALUE;
+			}
+			// Category 0x10's data pointer is a transient registration list, not pixels.
+			// Store only the validated resource address; each actual flip additionally
+			// requires a fresh owned SetParamWithBuffer snapshot for this slot.
+			data_address = eyes[0].Base40();
+		}
 		registrations.push_back({
 		    .group_index      = set_index,
 		    .data_address     = data_address,
 		    .metadata_address = metadata_address,
 		});
-		(void)group.ImageInfo(registrations.back());
+		if (!hmd_output) {
+			(void)group.ImageInfo(registrations.back());
+		}
 	}
 
 	Common::LockGuard lock(ctx->mutex);
@@ -1552,6 +1636,11 @@ KYTY_SYSV_ABI int VideoOutSubmitChangeBufferAttribute2(int handle, int set_index
 	if (ctx->closing || !current.occupied) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
+	if (ctx->bus == VIDEO_OUT_BUS_TYPE_HMD) {
+		// The observed HMD category has no ordinary framebuffer attribute layout.
+		// Require re-registration rather than interpreting its zeroed attribute as TV pixels.
+		return VIDEO_OUT_ERROR_INVALID_OPTION;
+	}
 
 	BufferAttributeGroup replacement {
 	    .attribute = *attribute,
@@ -1587,6 +1676,9 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
 	ctx->groups[set_index] = BufferAttributeGroup {};
+	if (ctx->bus == VIDEO_OUT_BUS_TYPE_HMD) {
+		Hmd2::ClearStereoFrames();
+	}
 	for (auto& buffer: ctx->buffers) {
 		if (buffer.group_index == set_index) {
 			buffer = VideoOutBuffer {};
@@ -1883,7 +1975,14 @@ static int ValidateOutputConfig(int handle, uint64_t mode, const VideoOutOutputO
 		}
 	}
 
-	if (mode != VIDEO_OUT_OUTPUT_MODE_DEFAULT && mode != VIDEO_OUT_OUTPUT_MODE_119_88HZ) {
+	auto* ctx = DriverState().Get(handle);
+	if (ctx == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_HANDLE;
+	}
+	Common::LockGuard lock(ctx->mutex);
+	const bool hmd_mode = mode == Hmd2::OUTPUT_MODE_89_91HZ || mode == Hmd2::OUTPUT_MODE_119_88HZ;
+	if (ctx->bus == VIDEO_OUT_BUS_TYPE_HMD ? !hmd_mode :
+	    (mode != VIDEO_OUT_OUTPUT_MODE_DEFAULT && mode != VIDEO_OUT_OUTPUT_MODE_119_88HZ)) {
 		return VIDEO_OUT_ERROR_UNSUPPORTED_OUTPUT_MODE;
 	}
 
@@ -1916,6 +2015,12 @@ KYTY_SYSV_ABI int VideoOutIsOutputSupported(int handle, uint64_t mode,
 
 	if (mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ) {
 		return (Config::GetVblankFrequency() >= 119 ? VIDEO_OUT_TRUE : VIDEO_OUT_FALSE);
+	}
+	if (mode == Hmd2::OUTPUT_MODE_89_91HZ || mode == Hmd2::OUTPUT_MODE_119_88HZ) {
+		// These identify the guest HMD source mode. SteamVR controls actual headset
+		// scanout timing; accepting a guest mode does not force the host panel rate.
+		return Config::VrEnabled() && Graphics::Vr::HostBridge().Active()
+		           ? VIDEO_OUT_TRUE : VIDEO_OUT_FALSE;
 	}
 
 	return VIDEO_OUT_TRUE;

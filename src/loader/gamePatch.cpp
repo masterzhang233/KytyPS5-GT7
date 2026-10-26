@@ -32,6 +32,8 @@ struct Write {
 };
 
 struct Plan {
+	bool                     strict_main_module = false;
+	uint64_t                 main_module_source_base = 0;
 	std::string              title_id;
 	std::string              version;
 	std::string              process;
@@ -76,6 +78,8 @@ bool LoadPlan(const std::filesystem::path& path, Plan* plan, std::string* error)
 	plan->title_id = root["id"].get<std::string>();
 	plan->version  = root["version"].get<std::string>();
 	plan->process  = root["process"].get<std::string>();
+	plan->strict_main_module = root.value("strict_main_module", false);
+	plan->main_module_source_base = root.value("main_module_source_base", uint64_t{0});
 
 	for (const auto& mod: root["mods"]) {
 		if (!mod.value("enabled", true)) {
@@ -254,6 +258,31 @@ bool Apply(const std::filesystem::path& plan_path, Program* main_program,
 		return false;
 	}
 	if (plan.writes.empty()) {
+		return true;
+	}
+	if (plan.strict_main_module) {
+		// Built-in GT7 profiles must match the main module at their audited RVA.
+		// Never scan another module or silently defer a failed profile until later.
+		for (auto& write : plan.writes) {
+			if (write.source_address < plan.main_module_source_base) {
+				::printf("GT7 profile: address below the main-module source base\n");
+				return false;
+			}
+			const auto rva = write.source_address - plan.main_module_source_base;
+			if (rva > main_program->mapped_size || write.off.size() > main_program->mapped_size-rva ||
+			    std::memcmp(reinterpret_cast<const void*>(main_program->base_vaddr+rva),
+			                write.off.data(), write.off.size()) != 0) {
+				::printf("GT7 profile: original bytes do not match the loaded main module; aborting\n");
+				return false;
+			}
+			write.target_address = main_program->base_vaddr+rva;
+		}
+		if (!ApplyWrites(&plan, *main_program, &error)) {
+			ReleaseCaves(&plan.cave_pages);
+			::printf("GT7 profile error: %s\n", error.c_str());
+			return false;
+		}
+		for (const auto& name : plan.mod_names) ::printf("Successfully applied GT7 profile: %s\n", name.c_str());
 		return true;
 	}
 

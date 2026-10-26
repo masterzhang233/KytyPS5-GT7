@@ -734,6 +734,7 @@ void AppendInputKey(ByteWriter& key, const ShaderVertexInputInfo& info) {
 	key.Put(info.wave_size);
 	key.Put(info.scratch_size_dwords);
 	key.Put(info.pa_cl_vs_out_cntl);
+	key.Put(info.clip_space.position_format);
 	key.Put(info.clip_space.enabled);
 	if (info.clip_space.enabled) {
 		for (int i = 0; i < 2; i++) {

@@ -1,0 +1,290 @@
+using namespace Libs;
+using namespace Libs::Hmd2;
+struct LayerPacket { std::array<uint8_t,0x1d8> bytes {}; };
+struct ListPacket { uint64_t layer,count=1,reserved=0; };
+static std::array<Graphics::ShaderTextureResource,2> Eyes() {
+ std::array<Graphics::ShaderTextureResource,2> e {};
+ e[0].fields[0]=0x12345678;e[0].fields[1]=43u<<20;
+ e[0].fields[2]=(511u<<14)|511u;e[0].fields[3]=13u<<28;
+ e[1]=e[0];e[1].fields[4]=0x10001;return e;
+}
+static LayerPacket Packet() {
+ LayerPacket p;uint32_t type=0x10;auto e=Eyes();std::memcpy(p.bytes.data(),&type,4);
+ std::memcpy(p.bytes.data()+8,e.data(),64);
+ float xyz[3]={1,2,3},quat[4]={0,0,0,1};
+ std::memcpy(p.bytes.data()+0x168,xyz,12);std::memcpy(p.bytes.data()+0x174,quat,16);return p;
+}
+static void Reset() {
+ g_initialized=false;g_reprojection_state=nullptr;g_open=false;
+ g_owned_reprojection_state.output_mode=0;ClearStereoFrames();
+ Graphics::Vr::HostBridge()={};Config::enabled=true;
+ LibKernel::clock=1000000;LibKernel::step=100;
+ fake_monotonic_ns=1000000000;fake_clock_step=10000;
+ SceHmd2InitializeParam init{};CHECK(Hmd2Initialize(&init)==0);
+ CHECK(Hmd2Open(255,0,0,0)==1);
+ SceHmd2ReprojectionInitializeParam repro{};
+ repro.pReprojectionBuff=&repro;repro.pDisplayBuff=&init;
+ CHECK(Hmd2ReprojectionInitialize(&repro,nullptr)==0);
+ CHECK(Hmd2ReprojectionEnableVrMode(OUTPUT_MODE_119_88HZ)==0);
+}
+static int Set(int index,uint64_t token,LayerPacket& p) {
+ ListPacket l{reinterpret_cast<uint64_t>(p.bytes.data())};
+ return Hmd2ReprojectionSetParamWithBuffer(index,token,&l,nullptr);
+}
+int main() {
+ try {
+  Reset();auto packet=Packet();StereoFrameSnapshot out;
+  CHECK(Set(2,7,packet)==0);packet.bytes.fill(0);
+  CHECK(TakeStereoFrame(2,out));CHECK(out.frame_token==7&&out.buffer_index==2);
+  CHECK(out.eyes[0].fields[0]==0x12345678&&out.eyes[1].BaseArray5()==1);
+  CHECK(out.guest_position[1]==2&&out.guest_orientation[3]==1);
+  CHECK(!TakeStereoFrame(2,out));std::cout<<"PASS owned snapshot and one-shot consumption\n";
+
+  packet=Packet();CHECK(Set(2,8,packet)==0);
+  uint32_t mono=0x12;std::memcpy(packet.bytes.data(),&mono,4);
+  CHECK(Set(2,9,packet)!=0);CHECK(!TakeStereoFrame(2,out));
+  std::cout<<"PASS mono rejects and clears stale slot\n";
+
+  packet=Packet();CHECK(Set(0,10,packet)==0);
+  CHECK(Hmd2ReprojectionSetParamWithBuffer(0,11,reinterpret_cast<void*>(1),nullptr)!=0);
+  CHECK(!TakeStereoFrame(0,out));CHECK(Set(-1,12,packet)!=0);CHECK(Set(16,12,packet)!=0);
+  std::cout<<"PASS invalid pointer and slot boundaries\n";
+
+  auto eyes=Eyes();CHECK(ValidateStereoDescriptors(eyes));
+  eyes[1]=eyes[0];CHECK(!ValidateStereoDescriptors(eyes));eyes=Eyes();eyes[1].fields[4]=0x10002;
+  CHECK(!ValidateStereoDescriptors(eyes));eyes=Eyes();eyes[1].fields[0]++;
+  CHECK(!ValidateStereoDescriptors(eyes));eyes=Eyes();eyes[0].fields[3]=0;
+  CHECK(!ValidateStereoDescriptors(eyes));
+  std::cout<<"PASS array views and identity bounds\n";
+
+  struct Registration {uint32_t type;std::array<Graphics::ShaderTextureResource,2> eyes;} reg{0x10,Eyes()};
+  struct RegistrationList {uint64_t layer;uint32_t count,reserved;} list{reinterpret_cast<uint64_t>(&reg),1,0};
+  std::array<Graphics::ShaderTextureResource,2> captured;
+  CHECK(ReadRegisteredStereo(&list,captured));CHECK(captured[1].BaseArray5()==1);
+  list.count=2;CHECK(!ReadRegisteredStereo(&list,captured));list.count=1;reg.type=0x12;
+  CHECK(!ReadRegisteredStereo(&list,captured));std::cout<<"PASS distinct registration layout\n";
+
+  packet=Packet();CHECK(Set(0,10,packet)==0);CHECK(Hmd2ReprojectionDisableVrMode()==0);
+  CHECK(!TakeStereoFrame(0,out));CHECK(Set(0,11,packet)!=0);
+  CHECK(Hmd2ReprojectionEnableVrMode(OUTPUT_MODE_119_88HZ)==0);CHECK(Set(0,12,packet)==0);
+  CHECK(Hmd2Close(1)==0);CHECK(!TakeStereoFrame(0,out));CHECK(Hmd2Close(1)!=0);
+  CHECK(Hmd2Open(255,0,0,0)==1);CHECK(!TakeStereoFrame(0,out));
+  std::cout<<"PASS disable close reopen invalidation\n";
+
+  Reset();uint64_t timestamp=0;
+  CHECK(Hmd2ReprojectionBeginFrame(70)==0);
+  CHECK(Graphics::Vr::HostBridge().timing_reads==1);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(70,&timestamp)==0&&timestamp==1009985);
+  std::cout<<"PASS timing first success retains one query and original target\n";
+
+  Reset();auto& runtime=Graphics::Vr::HostBridge();
+  runtime.query_hook=[&](unsigned n){CHECK(n<=2);runtime.available=n==2;runtime.timing.prediction_seconds=.022f;};
+  CHECK(Hmd2ReprojectionBeginFrame(71)==0&&runtime.timing_reads==2);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(71,&timestamp)==0&&timestamp==1022085);
+  std::cout<<"PASS transient host failure retries fresh actual sample and anchor\n";
+
+  Reset();runtime.query_hook=[&](unsigned n){CHECK(n<=2);runtime.force_sample=n==1;
+   runtime.sample=980000000;runtime.timing.prediction_seconds=n==1?.01f:.022f;};
+  CHECK(Hmd2ReprojectionBeginFrame(72)==0&&runtime.timing_reads==2);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(72,&timestamp)==0&&timestamp==1022085);
+  std::cout<<"PASS expired first target replaced by fresh second runtime target\n";
+
+  Reset();runtime.query_hook=[&](unsigned n){CHECK(n<=2);fake_clock_step=n==1?3000000:10000;};
+  CHECK(Hmd2ReprojectionBeginFrame(73)==0&&runtime.timing_reads==2);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(73,&timestamp)==0&&timestamp==1010085);
+  std::cout<<"PASS interrupted clock mapping retries once with fresh mapping\n";
+
+  for(unsigned mode=0;mode<3;++mode) {
+   Reset();runtime.query_hook=[&](unsigned n){CHECK(n<=2);
+    if(mode==0)runtime.available=false;
+    if(mode==1){runtime.force_sample=true;runtime.sample=980000000;}
+    if(mode==2)fake_clock_step=3000000;};
+   timestamp=24000;CHECK(Hmd2ReprojectionBeginFrame(74)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);
+   CHECK(runtime.timing_reads==2);
+   CHECK(Hmd2ReprojectionGetPredictedDisplayTime(74,&timestamp)==ERROR_REPROJECTION_NOT_INITIALIZED&&timestamp==24000);
+  }
+  std::cout<<"PASS persistent query expired and interrupted samples bounded to two reads\n";
+
+  Reset();runtime.query_hook=[&](unsigned n){CHECK(n==1);runtime.timing.prediction_seconds=std::numeric_limits<float>::quiet_NaN();};
+  CHECK(Hmd2ReprojectionBeginFrame(75)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE&&runtime.timing_reads==1);
+  std::cout<<"PASS malformed successful sample remains immediate failure\n";
+
+  Reset();runtime.query_hook=[&](unsigned n){CHECK(n<=2);runtime.available=n==2;if(n==2)ClearStereoFrames();};
+  CHECK(Hmd2ReprojectionBeginFrame(76)==ERROR_REPROJECTION_NOT_INITIALIZED&&runtime.timing_reads==2);
+  timestamp=24000;CHECK(Hmd2ReprojectionGetPredictedDisplayTime(76,&timestamp)!=0&&timestamp==24000);
+  std::cout<<"PASS lifecycle change during retry cannot publish old frame\n";
+
+  Reset();runtime.query_hook=[&](unsigned n){CHECK(n==1);runtime.available=false;ClearStereoFrames();};
+  CHECK(Hmd2ReprojectionBeginFrame(78)==ERROR_REPROJECTION_NOT_INITIALIZED&&runtime.timing_reads==1);
+  timestamp=24000;CHECK(Hmd2ReprojectionGetPredictedDisplayTime(78,&timestamp)!=0&&timestamp==24000);
+  std::cout<<"PASS teardown after failed first query avoids retry\n";
+
+  Reset();CHECK(Hmd2ReprojectionBeginFrame(77)==0);runtime.timing_reads=0;
+  runtime.query_hook=[&](unsigned n){CHECK(n<=2);runtime.available=false;};
+  CHECK(Hmd2ReprojectionBeginFrame(77)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE&&runtime.timing_reads==2);
+  timestamp=24000;CHECK(Hmd2ReprojectionGetPredictedDisplayTime(77,&timestamp)!=0&&timestamp==24000);
+  std::cout<<"PASS failed retry invalidates earlier same-token publication\n";
+
+  Reset();CHECK(Hmd2ReprojectionBeginFrame(100)==0);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(100,&timestamp)==0&&timestamp>=1009980&&timestamp<=1009990);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(101,&timestamp)!=0);
+  CHECK(Hmd2ReprojectionBeginFrame(164)==0);CHECK(Hmd2ReprojectionGetPredictedDisplayTime(100,&timestamp)!=0);
+  Graphics::Vr::HostBridge().available=false;
+  CHECK(Hmd2ReprojectionBeginFrame(164)!=0);CHECK(Hmd2ReprojectionGetPredictedDisplayTime(164,&timestamp)!=0);
+  std::cout<<"PASS measured timing and exact token lookup\n";
+
+  Reset();fake_clock_step=3000000;CHECK(Hmd2ReprojectionBeginFrame(5)!=0);
+  fake_clock_step=10000;Graphics::Vr::HostBridge().timing.prediction_seconds=std::numeric_limits<float>::quiet_NaN();
+  CHECK(Hmd2ReprojectionBeginFrame(5)!=0);
+  Graphics::Vr::HostBridge().timing.prediction_seconds=.01f;
+  Graphics::Vr::HostBridge().hook=[] {ClearStereoFrames();};
+  CHECK(Hmd2ReprojectionBeginFrame(5)!=0);CHECK(Hmd2ReprojectionGetPredictedDisplayTime(5,&timestamp)!=0);
+  Graphics::Vr::HostBridge().hook=[] {fake_monotonic_ns+=8000000;LibKernel::clock+=8000;};
+  CHECK(Hmd2ReprojectionBeginFrame(6)==0);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(6,&timestamp)==0&&timestamp>1017000);
+  std::cout<<"PASS stale slow or invalid time rejected\n";
+
+  Reset();SceHmd2DeviceInformation info{};CHECK(Hmd2GetDeviceInformation(&info)==0);
+  CHECK(info.status==0&&info.deviceInfo.panelResolution.width==4000&&info.lensSeparationDistance==64);
+  SceHmd2FieldOfView fov{};CHECK(Hmd2GetFieldOfViewWithoutHandle(&fov)==0&&fov.tanOut==1);
+  Graphics::Vr::HostBridge().info.eyes[0]={-1.375f,.875f,-1.5f,.75f};
+  CHECK(Hmd2GetFieldOfViewWithoutHandle(&fov)==0);
+  CHECK(fov.tanOut==1.375f&&fov.tanIn==.875f&&fov.tanTop==.75f&&fov.tanBottom==1.5f);
+  Graphics::Vr::HostBridge().info.eyes[0].bottom=std::numeric_limits<float>::quiet_NaN();
+  CHECK(Hmd2GetFieldOfViewWithoutHandle(&fov)!=0&&fov.tanTop==.75f&&fov.tanBottom==1.5f);
+  std::cout<<"PASS OpenVR reversed vertical raw names map to physical GT7 FOV with failed-output preservation\n";
+  Graphics::Vr::HostBridge().available=false;CHECK(Hmd2GetDeviceInformation(&info)==0&&info.status==2);
+  CHECK(Hmd2GetFieldOfViewWithoutHandle(&fov)!=0);
+  std::cout<<"PASS actual headset and failure state\n";
+
+  auto* memory=static_cast<uint8_t*>(VirtualAlloc(nullptr,8192,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));CHECK(memory);
+  DWORD old;CHECK(VirtualProtect(memory+4096,4096,PAGE_NOACCESS,&old));
+  std::array<uint8_t,64> dest{};CHECK(!ReadHmdMemory(reinterpret_cast<uint64_t>(memory+4080),dest.data(),64));
+  uint64_t value=123;CHECK(WriteHmdMemory(memory,&value,8));
+  CHECK(VirtualProtect(memory,4096,PAGE_READONLY,&old));
+  uint64_t replacement=456;CHECK(!WriteHmdMemory(memory,&replacement,8));
+  CHECK(*reinterpret_cast<uint64_t*>(memory)==123);CHECK(VirtualFree(memory,0,MEM_RELEASE));
+  std::cout<<"PASS real Windows partial read and read-only write rejection\n";
+
+  Reset();packet=Packet();std::atomic<bool> done=false;std::atomic<unsigned> consumed=0;
+  std::thread producer([&]{for(uint64_t i=1;i<=2000;++i)CHECK(Set(1,i,packet)==0);done=true;});
+  std::thread consumer([&]{uint64_t last=0;while(!done){StereoFrameSnapshot s;if(TakeStereoFrame(1,s)){CHECK(s.generation>last);last=s.generation;CHECK(s.eyes[1].BaseArray5()==1);++consumed;}}});
+  producer.join();consumer.join();CHECK(consumed>0);
+  std::cout<<"PASS concurrent publish consume consistency\n";
+  // Reset diagnostic counters only in this fixture. Production clear/close/open
+  // must retain the process-wide budget, which is checked below.
+  Reset();packet=Packet();g_layer_diagnostic_records=0;g_layer_diagnostic_last_ns=0;
+  Log::lines.clear();steady_calls=0;guest_clock_calls=0;
+  if(!HmdLayerDiagnosticsEnabled()) {
+   for(unsigned i=0;i<40;++i){CHECK(Set(0,i,packet)==0);CHECK(TakeStereoFrame(0,out));CHECK(!TakeStereoFrame(0,out));}
+   CHECK(Log::lines.empty()&&g_layer_diagnostic_records==0);
+   CHECK(steady_calls==0&&guest_clock_calls==0);
+   std::cout<<"PASS diagnostics disabled has no clock or logging work\n";
+  } else {
+   uint32_t dimensions[2]={1234,5678};
+   std::memcpy(packet.bytes.data()+0x128,dimensions,8);
+   std::memcpy(packet.bytes.data()+0x138,dimensions,8);
+   float submitted_fov[8]={1.125f,.875f,1.5f,.75f,.875f,1.125f,1.5f,.75f};
+   std::memcpy(packet.bytes.data()+0x148,submitted_fov,sizeof(submitted_fov));
+   uint32_t opaque=0x7fc01234;std::memcpy(packet.bytes.data()+0x118,&opaque,4);
+   packet.bytes[0x1a0]=1;packet.bytes[0x1a2]=1;
+   uint64_t inaccessible_optional=1;std::memcpy(packet.bytes.data()+0x1d0,&inaccessible_optional,8);
+   CHECK(Hmd2ReprojectionBeginFrame(42)==0);
+   uint64_t prediction=0;CHECK(Hmd2ReprojectionGetPredictedDisplayTime(42,&prediction)==0);
+   bool took_during_log=false;
+   Log::hook=[&]{StereoFrameSnapshot published;took_during_log=TakeStereoFrame(3,published);
+    CHECK(took_during_log&&published.frame_token==42&&published.guest_position[1]==2);};
+   CHECK(Set(3,42,packet)==0);Log::hook={};CHECK(took_during_log&&!TakeStereoFrame(3,out));
+   CHECK(Log::lines.size()==1);
+   const auto& line=Log::lines.front();
+   CHECK(line.find("slot=3 token=42")!=std::string::npos);
+   CHECK(line.find("prediction_known=1 predicted_guest_us="+std::to_string(prediction))!=std::string::npos);
+   CHECK(line.find("logical=1234x5678,1234x5678")!=std::string::npos);
+   CHECK(line.find("fov=[1.125,0.875,1.5,0.75],[0.875,1.125,1.5,0.75]")!=std::string::npos);
+   CHECK(line.find("flags_1a0_1a2=01,00,01 optional_present=1")!=std::string::npos);
+   auto raw_at=line.find("raw_000_1cf=");CHECK(raw_at!=std::string::npos);raw_at+=12;
+   CHECK(line.substr(raw_at+0x118*2,8)=="3412c07f");
+   CHECK(line.size()-raw_at==0x1d0*2+1); // Exactly the owned prefix plus newline.
+   std::cout<<"PASS diagnostic offsets raw bits exact prediction and unlocked one-shot publication\n";
+
+   CHECK(Set(3,43,packet)==0);CHECK(Log::lines.size()==1);CHECK(TakeStereoFrame(3,out));
+   auto mono_packet=packet;uint32_t mono_type=0x12;std::memcpy(mono_packet.bytes.data(),&mono_type,4);
+   fake_monotonic_ns+=250000000;auto before_clocks=steady_calls;
+   CHECK(Set(3,44,mono_packet)!=0);CHECK(Log::lines.size()==1&&steady_calls==before_clocks);
+   CHECK(Set(3,106,packet)==0);CHECK(Log::lines.size()==2);CHECK(TakeStereoFrame(3,out));
+   CHECK(Log::lines.back().find("prediction_known=0 predicted_guest_us=0")!=std::string::npos);
+   std::cout<<"PASS diagnostics throttled invalid frames omitted and aliased token unknown\n";
+
+   fake_monotonic_ns+=250000000;Log::hook=[]{throw std::runtime_error("test sink failure");};
+   CHECK(Set(3,107,packet)==0);Log::hook={};CHECK(TakeStereoFrame(3,out));
+   CHECK(!TakeStereoFrame(3,out));
+   while(g_layer_diagnostic_records<32){fake_monotonic_ns+=250000000;CHECK(Set(3,108,packet)==0);CHECK(TakeStereoFrame(3,out));}
+   CHECK(Log::lines.size()==32);auto steady_before=steady_calls,guest_before=guest_clock_calls;
+   for(unsigned i=0;i<50;++i){fake_monotonic_ns+=250000000;CHECK(Set(3,200+i,packet)==0);CHECK(TakeStereoFrame(3,out));}
+   CHECK(Log::lines.size()==32&&g_layer_diagnostic_records==32);
+   CHECK(steady_calls==steady_before&&guest_clock_calls==guest_before);
+   Reset();CHECK(g_layer_diagnostic_records==32);CHECK(Set(3,900,packet)==0);
+   CHECK(Log::lines.size()==32&&TakeStereoFrame(3,out)&&!TakeStereoFrame(3,out));
+   std::cout<<"PASS process-wide 32 record cap survives clear reopen and logging failures\n";
+  }
+  CHECK(Hmd2ReprojectionSetRenderConfig(1,0,0)==0);CHECK(Hmd2ReprojectionSetRenderConfig(2,0,0)!=0);
+  CHECK(Hmd2ReprojectionSetTiming(0)!=0);std::cout<<"PASS narrow mode validation\n";
+
+  for(auto& count:g_timing_diagnostic_counts)count=0;
+  Log::lines.clear();
+  auto reason=[&](const char* expected){
+   if(HmdLayerDiagnosticsEnabled())CHECK(!Log::lines.empty()&&Log::lines.back().find(std::string("reason=")+expected+" ")!=std::string::npos);
+   else CHECK(Log::lines.empty());
+  };
+  Reset();CHECK(Hmd2ReprojectionDisableVrMode()==0);
+  CHECK(Hmd2ReprojectionBeginFrame(5)==ERROR_REPROJECTION_NOT_INITIALIZED);reason("inactive");
+  Reset();Graphics::Vr::HostBridge().available=false;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("host_timing");
+  if(HmdLayerDiagnosticsEnabled())CHECK(Log::lines.back().find("host_error=test host timing unavailable")!=std::string::npos);
+  uint64_t unchanged=24000;
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(5,&unchanged)==ERROR_REPROJECTION_NOT_INITIALIZED);
+  CHECK(unchanged==24000);reason("lookup_missing");
+  Reset();fake_clock_step=uint64_t(1)<<63;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("clock_backwards");
+  Reset();fake_clock_step=3000000;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("clock_uncertain");
+  Reset();Graphics::Vr::HostBridge().timing.prediction_seconds=std::numeric_limits<float>::quiet_NaN();
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("invalid_sample");
+  Reset();Graphics::Vr::HostBridge().force_sample=true;Graphics::Vr::HostBridge().sample=1001000000;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("sample_future");
+  Reset();Graphics::Vr::HostBridge().force_sample=true;Graphics::Vr::HostBridge().sample=980000000;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_NO_DEVICE);reason("sample_expired");
+  Reset();LibKernel::clock=UINT64_MAX-5;
+  CHECK(Hmd2ReprojectionBeginFrame(5)==VideoOut::VIDEO_OUT_ERROR_INVALID_VALUE);reason("overflow");
+  Reset();Graphics::Vr::HostBridge().hook=[] {ClearStereoFrames();};
+  CHECK(Hmd2ReprojectionBeginFrame(5)==ERROR_REPROJECTION_NOT_INITIALIZED);reason("epoch_changed");
+  Reset();CHECK(Hmd2Close(1)==0);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(5,&unchanged)==ERROR_REPROJECTION_NOT_INITIALIZED);reason("lookup_inactive");
+  Reset();CHECK(Hmd2ReprojectionBeginFrame(5)==0);
+  CHECK(Hmd2ReprojectionGetPredictedDisplayTime(5,nullptr)==ERROR_PARAMETER_NULL);reason("output_unwritable");
+  CHECK(unchanged==24000);
+  std::cout<<"PASS all timing rejection reasons preserve errors and guest fallback sentinel\n";
+
+  Reset();for(auto& count:g_timing_diagnostic_counts)count=0;Log::lines.clear();
+  const auto clock_before=steady_calls,guest_before=guest_clock_calls;
+  TimingDiagnostic diagnostic{};diagnostic.epoch=42;
+  bool reentered=false;
+  Log::hook=[&]{ClearStereoFrames();reentered=true;throw std::runtime_error("timing diagnostic sink");};
+  CHECK(TimingFailure(TimingReason::HostTiming,-777,5,diagnostic,"runtime rejected")==-777);
+  Log::hook={};CHECK(reentered==HmdLayerDiagnosticsEnabled());
+  for(size_t i=0;i<static_cast<size_t>(TimingReason::Count);++i)
+   for(unsigned repeat=0;repeat<10;++repeat)
+    CHECK(TimingFailure(static_cast<TimingReason>(i),-777,5,diagnostic)==-777);
+  CHECK(steady_calls==clock_before&&guest_clock_calls==guest_before);
+  if(HmdLayerDiagnosticsEnabled()) {
+   CHECK(Log::lines.size()==4*static_cast<size_t>(TimingReason::Count));
+   Reset();auto lines_before=Log::lines.size();
+   CHECK(TimingFailure(TimingReason::HostTiming,-777,5,diagnostic)==-777);
+   CHECK(Log::lines.size()==lines_before);
+  }else{
+   CHECK(Log::lines.empty());for(auto& count:g_timing_diagnostic_counts)CHECK(count==0);
+  }
+  std::cout<<"PASS timing diagnostics bounded disabled-no-work unlocked and exception-safe\n";
+  return 0;
+ } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
+}

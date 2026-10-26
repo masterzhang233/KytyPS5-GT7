@@ -1,0 +1,44 @@
+{
+  "id": "PPSA01317",
+  "version": "01.710.000",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "Quest SteamVR: use the existing full-frustum path without eye-tracked foveation",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "1A408F8",
+          "off": "66C705D7678D040101",
+          "on": "66C705D7678D040001"
+        }
+      ]
+    },
+    {
+      "name": "Quest SteamVR: native eye render scale 1.25",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "93E64B",
+          "off": "C5FA1005FD6DDB03",
+          "on": "C5FA1005F175DB03"
+        }
+      ]
+    }
+  ],
+  "evidence": "GT7 SHA256 9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf; only init foveation enable byte changes, method retained; game files remain unchanged.",
+  "native_eye_resolution": {
+    "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf",
+    "vrscale": "1.25",
+    "width": 3000,
+    "height": 2550,
+    "pixel_ratio_to_2400x2040": 1.5625,
+    "literal_rva": "0x46f5c44",
+    "method": "Existing native vrscale input, before all eye target size queries and allocations",
+    "preserved": "FOV, pose, eye separation, foveation setting, graphics formats, stereo layers",
+    "limits": "Offline verified candidate. Higher pixel count costs GPU time; no measured FPS claim. Native alternate hardware width factor 1.5625 is preserved. An explicit guest argv vrscale would override this default."
+  },
+  "strict_main_module": true,
+  "main_module_source_base": 0,
+  "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf"
+}

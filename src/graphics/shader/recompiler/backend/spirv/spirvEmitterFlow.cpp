@@ -450,35 +450,61 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 	}
 }
 
-uint32_t ConvertClipCoordinate(EmitterState& state, uint32_t coordinate, float scale,
-                               float offset, float half_extent) {
+uint32_t ConvertClipCoordinate(EmitterState& state, uint32_t coordinate, uint32_t w,
+                               float scale, float offset, float half_extent) {
 	const auto window  = state.builder.AllocateId();
+	const auto offset_w = state.builder.AllocateId();
 	const auto biased  = state.builder.AllocateId();
 	const auto divided = state.builder.AllocateId();
 	const auto ndc     = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpFMul, TypeF32(state), window, coordinate,
 	                          ConstantF32Value(state, scale));
-	state.builder.AddFunction(spv::OpFAdd, TypeF32(state), biased, window,
+	state.builder.AddFunction(spv::OpFMul, TypeF32(state), offset_w, w,
 	                          ConstantF32Value(state, offset));
+	state.builder.AddFunction(spv::OpFAdd, TypeF32(state), biased, window, offset_w);
 	state.builder.AddFunction(spv::OpFDiv, TypeF32(state), divided, biased,
 	                          ConstantF32Value(state, half_extent));
-	state.builder.AddFunction(spv::OpFSub, TypeF32(state), ndc, divided,
-	                          ConstantF32Value(state, 1.0f));
+	state.builder.AddFunction(spv::OpFSub, TypeF32(state), ndc, divided, w);
 	return ndc;
 }
 
 uint32_t ConvertPositionToClipSpace(EmitterState& state, uint32_t position) {
 	const auto& transform = state.input_info.vertex->clip_space;
+	const auto format = transform.position_format;
+	// Normal clip coordinates already have the representation Vulkan expects.
+	// Keep that common path byte-for-byte unchanged, with no additional operations.
+	if (!transform.enabled && format == ViewportTransform::IncomingW) {
+		return position;
+	}
 	uint32_t    components[4] {};
 	for (uint32_t i = 0; i < 4; i++) {
 		components[i] = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), components[i], position,
 		                          i);
 	}
-	components[0] = ConvertClipCoordinate(state, components[0], transform.scale[0],
-	                                      transform.offset[0], transform.half_extent[0]);
-	components[1] = ConvertClipCoordinate(state, components[1], transform.scale[1],
-	                                      transform.offset[1], transform.half_extent[1]);
+	if ((format & ViewportTransform::IncomingW) == 0) {
+		const auto w = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpFDiv, TypeF32(state), w,
+		                          ConstantF32Value(state, 1.0f), components[3]);
+		components[3] = w;
+	}
+	for (uint32_t i = 0; i < 3; ++i) {
+		const auto predivided = i < 2 ? ViewportTransform::PredividedXY : ViewportTransform::PredividedZ;
+		if ((format & predivided) != 0) {
+			const auto homogeneous = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpFMul, TypeF32(state), homogeneous,
+			                          components[i], components[3]);
+			components[i] = homogeneous;
+		}
+	}
+	if (transform.enabled) {
+		// The large host viewport emulates disabled XY clipping. Its affine offset
+		// must be homogeneous too; Vulkan still divides the resulting position by W.
+		components[0] = ConvertClipCoordinate(state, components[0], components[3], transform.scale[0],
+		                                      transform.offset[0], transform.half_extent[0]);
+		components[1] = ConvertClipCoordinate(state, components[1], components[3], transform.scale[1],
+		                                      transform.offset[1], transform.half_extent[1]);
+	}
 	const auto converted = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 4), converted,
 	                          components[0], components[1], components[2], components[3]);
@@ -664,8 +690,7 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				value = mapped;
 			}
 		}
-		if (exp.kind == IR::ExportTargetKind::Position &&
-		    state.input_info.vertex->clip_space.enabled) {
+		if (exp.kind == IR::ExportTargetKind::Position) {
 			value = ConvertPositionToClipSpace(state, value);
 		}
 		if (state.program.stage == ShaderType::Mesh) {

@@ -21,6 +21,12 @@ can change significantly between builds.
 > settings it was tested with and its current state. In the game, use the performance mode: the
 > ray tracing (RT) mode works much better now but is not recommended yet.
 
+> [!TIP]
+> The `masterzhang233` GT7 VR & Render preview adds a prominent launcher panel for
+> SteamVR and internal 3D resolution, with separate desktop output settings.
+> See [GT7 VR and render settings](docs/GT7-VR.md) for the supported game version,
+> Quest 3/Steam Link setup, profile choices, and validation limits.
+
 > [!IMPORTANT]
 > KytyPS5 is not affiliated with Sony Interactive Entertainment or PlayStation. The project does
 > not distribute games or copyrighted system software. Use only game files that you have obtained

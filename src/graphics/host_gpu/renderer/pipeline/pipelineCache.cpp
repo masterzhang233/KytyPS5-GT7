@@ -5193,14 +5193,18 @@ bool PipelineCache::DescribeGraphicsStages(
 			                                    ((pixel_info.target_half_float_mask & 1u) << 1u);
 		}
 	}
+	// VTE position formats belong to the final position-producing stage, including
+	// the TES in a tessellated pipeline. LS/HS intermediate data stays unchanged.
+	auto& clip = vertex_info[tess_active ? 2u : 0u].clip_space;
+	const auto vte_control = context.GetScreenViewport().transform_control;
+	clip.position_format = vte_control & ViewportTransform::PositionFormatMask;
 	if (context.GetClipControl().clip_disable) {
 		const auto& viewport = context.GetScreenViewport().viewports[0];
 		const auto& limits   = m_graphics.GetPhysicalDeviceProperties().limits;
-		auto&       clip     = vertex_info[tess_active ? 2u : 0u].clip_space;
-		clip.scale[0]        = viewport.xscale;
-		clip.scale[1]        = viewport.yscale;
-		clip.offset[0]       = viewport.xoffset;
-		clip.offset[1]       = viewport.yoffset;
+		clip.scale[0]        = ViewportTransform::Scale<0>(vte_control, viewport.xscale);
+		clip.scale[1]        = ViewportTransform::Scale<1>(vte_control, viewport.yscale);
+		clip.offset[0]       = ViewportTransform::Offset<0>(vte_control, viewport.xoffset);
+		clip.offset[1]       = ViewportTransform::Offset<1>(vte_control, viewport.yoffset);
 		clip.half_extent[0] =
 		    static_cast<float>(std::min(limits.maxViewportDimensions[0], 16384u)) * 0.5f;
 		clip.half_extent[1] =

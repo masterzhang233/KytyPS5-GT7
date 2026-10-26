@@ -221,6 +221,40 @@ To use your own sound, replace the emulator's assets/sounds/trophy-unlock.wav wi
       </widget>
      </item>
      <item row="4" column="0" colspan="2">
+      <widget class="QGroupBox" name="gt7_group">
+       <property name="title"><string>GT7 internal rendering / SteamVR (experimental)</string></property>
+       <layout class="QGridLayout" name="gt7Layout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="label_gt7_desktop_height">
+          <property name="text"><string>Desktop 3D height:</string></property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QComboBox" name="comboBox_gt7_desktop_height">
+          <property name="toolTip"><string>Sets GT7's internal scene scale, separately from Screen resolution. Heights are nominal; special passes can differ. Native keeps the original controller.</string></property>
+         </widget>
+        </item>
+        <item row="0" column="2">
+         <widget class="QCheckBox" name="checkBox_gt7_vr">
+          <property name="text"><string>SteamVR / Quest</string></property>
+          <property name="toolTip"><string>Connect the headset in SteamVR before starting. Uses the game's stereo rendering and the full-frustum compatibility patch.</string></property>
+         </widget>
+        </item>
+        <item row="0" column="3">
+         <widget class="QComboBox" name="comboBox_gt7_vr_scale">
+          <property name="toolTip"><string>Internal size per eye; independent of SteamVR's resolution setting. Higher values use more GPU time and memory.</string></property>
+         </widget>
+        </item>
+        <item row="1" column="0" colspan="4">
+         <widget class="QLabel" name="label_gt7_compatibility">
+          <property name="text"><string>PPSA01317 01.710.000 only. The executable fingerprint is verified before launch. Game files remain unchanged.</string></property>
+          <property name="wordWrap"><bool>true</bool></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item row="5" column="0" colspan="2">
       <widget class="QGroupBox" name="debug_group">
        <property name="title">
         <string>Debugging &amp;&amp; logs</string>

@@ -5,6 +5,8 @@
 
 #include <memory>
 #include <span>
+#include <array>
+#include "graphics/shader/shaderBindings.h"
 
 namespace Libs::Graphics {
 
@@ -12,6 +14,7 @@ class CommandBuffer;
 class RenderContext;
 struct ImageInfo;
 struct WindowContext;
+namespace Vr { struct Pose; }
 
 class Presenter final {
 public:
@@ -30,6 +33,8 @@ public:
 	KYTY_CLASS_NO_COPY(Presenter);
 
 	[[nodiscard]] Frame&         PrepareFrame(CommandBuffer& command, const ImageInfo& info);
+	[[nodiscard]] Frame*         PrepareVrFrame(CommandBuffer& command,
+	    const std::array<ShaderTextureResource, 2>& eyes, const Vr::Pose* render_pose = nullptr);
 	[[nodiscard]] Frame&         PrepareBlankFrame(uint32_t width, uint32_t height, bool opaque,
 	                                               CommandBuffer* producer = nullptr);
 	[[nodiscard]] bool           PresentLastFrame();

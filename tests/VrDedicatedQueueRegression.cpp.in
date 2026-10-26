@@ -1,0 +1,94 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+#include "graphics/vr/vrQueueSelection.h"
+using namespace std::chrono_literals;
+static void Check(bool ok,const char* why="fixture invariant"){if(!ok)throw std::runtime_error(why);}
+#define EXIT(...) throw std::runtime_error("production EXIT")
+#define EXIT_IF(x) Check(!(x),"production EXIT_IF")
+#define KYTY_CLASS_NO_COPY(T) T(const T&)=delete;T& operator=(const T&)=delete
+static thread_local int held_graphics=0,held_vr=0,held_render=0,held_pool=0;
+namespace Common {
+struct Mutex {enum Kind{Pool,Graphics,Vr,Render};Kind kind;std::mutex mutex;
+ explicit Mutex(Kind k=Pool):kind(k){}
+ int& Count(){return kind==Graphics?held_graphics:kind==Vr?held_vr:kind==Render?held_render:held_pool;}
+ void Lock(){if(kind==Render)Check(!held_graphics&&!held_vr&&!held_pool,"render lock inversion");if(kind==Graphics||kind==Vr)Check(!held_pool,"queue under pool");mutex.lock();++Count();}
+ void Unlock(){--Count();mutex.unlock();}};
+struct LockGuard{Mutex& mutex;explicit LockGuard(Mutex&m):mutex(m){mutex.Lock();}~LockGuard(){mutex.Unlock();}};
+}
+namespace vk {
+enum class Format{eUndefined,Rgba};struct Extent2D{uint32_t width=0,height=0;};using Semaphore=void*;
+enum class PipelineStageFlagBits{eAllCommands};using PipelineStageFlags=PipelineStageFlagBits;
+struct TimelineSemaphoreSubmitInfo{uint32_t waitSemaphoreValueCount=0;const uint64_t*pWaitSemaphoreValues=nullptr;uint32_t signalSemaphoreValueCount=0;const uint64_t*pSignalSemaphoreValues=nullptr;};
+struct SubmitInfo{const void*pNext=nullptr;uint32_t waitSemaphoreCount=0;const Semaphore*pWaitSemaphores=nullptr;const PipelineStageFlags*pWaitDstStageMask=nullptr;uint32_t signalSemaphoreCount=0;const Semaphore*pSignalSemaphores=nullptr;};
+}
+using VkFormat=vk::Format;using VkImageUsageFlags=uint32_t;using VkImageLayout=int;
+struct Timeline {mutable std::mutex mutex;std::condition_variable cv;uint64_t current=1,completed=0;int blocked=0,waits=0;
+ uint64_t Next(){std::lock_guard l(mutex);return current++;}uint64_t Current()const{std::lock_guard l(mutex);return current;}
+ void Signal(uint64_t n){std::lock_guard l(mutex);completed=std::max(completed,n);cv.notify_all();}
+ bool Complete()const{std::lock_guard l(mutex);return completed>=current-1;}
+ void Wait(uint64_t n){Check(!held_graphics&&!held_vr&&!held_render&&!held_pool,"CPU wait holds lock");std::unique_lock l(mutex);++waits;if(completed>=n)return;++blocked;cv.notify_all();Check(cv.wait_for(l,2s,[&]{return completed>=n;}),"timeline timeout");}
+ void Blocked(){std::unique_lock l(mutex);Check(cv.wait_for(l,1s,[&]{return blocked>0;}),"reuse did not wait");}
+};
+struct Graphics;struct MasterSemaphore;
+struct Queue {bool enabled=false,fail_submit=false,fail_retire=false;int waits=0,signals=0;vk::Semaphore producer=nullptr;uint64_t producer_tick=0;
+ bool operator!=(std::nullptr_t)const{return enabled;}
+ int submit(uint32_t,const vk::SubmitInfo*,std::nullptr_t);
+};
+struct Device {Timeline* scheduler=nullptr;MasterSemaphore* vr_master=nullptr;std::atomic<int> destroyed=0,unsafe=0;void destroyImageView(void*,void*);};
+struct FakeImage{void*image=nullptr;vk::Extent2D extent{};vk::Format format=vk::Format::eUndefined;uint32_t usage=7;struct{int layout=6;}state;};
+struct Graphics{Common::Mutex queue_mutex{Common::Mutex::Graphics},vr_queue_mutex{Common::Mutex::Vr};Queue vr_queue;Device device;std::unique_ptr<Timeline>vr_timeline;void DeleteImage(FakeImage&){}};
+struct WindowContext{Graphics graphic_ctx;};
+struct MasterSemaphore {Graphics& graphics;Timeline&state;explicit MasterSemaphore(Graphics&g):graphics(g),state(*(g.vr_timeline=std::make_unique<Timeline>())){g.device.vr_master=this;}~MasterSemaphore(){graphics.device.vr_master=nullptr;}
+ uint64_t CurrentTick()const{return state.Current();}uint64_t NextTick(){return state.Next();}vk::Semaphore Handle(){return this;}void Wait(uint64_t n){state.Wait(n);}};
+void Device::destroyImageView(void*,void*){if(!scheduler->Complete()||(vr_master&&!vr_master->state.Complete()))++unsafe;++destroyed;}
+int Queue::submit(uint32_t n,const vk::SubmitInfo*s,std::nullptr_t){Check(enabled&&held_vr==1&&!held_graphics&&n==1,"wrong dedicated queue owner");if(fail_submit||(fail_retire&&s->signalSemaphoreCount))throw std::runtime_error("injected queue failure");auto*t=static_cast<const vk::TimelineSemaphoreSubmitInfo*>(s->pNext);Check(t,"missing timeline info");if(s->waitSemaphoreCount){Check(s->waitSemaphoreCount==1&&t->waitSemaphoreValueCount==1&&*s->pWaitDstStageMask==vk::PipelineStageFlagBits::eAllCommands,"invalid producer dependency");producer=*s->pWaitSemaphores;producer_tick=*t->pWaitSemaphoreValues;++waits;}if(s->signalSemaphoreCount){Check(s->signalSemaphoreCount==1&&t->signalSemaphoreValueCount==1,"invalid retirement dependency");auto*m=static_cast<MasterSemaphore*>(*s->pSignalSemaphores);Check(*t->pSignalSemaphoreValues==m->CurrentTick()-1,"wrong retirement value");++signals;}return 0;}
+static void RequireVulkanSuccess(int result,const char*){Check(result==0);}
+namespace Vr {
+struct Pose{};struct FramePose{Pose pose;};struct Status{bool ok=false;explicit operator bool()const{return ok;}};struct SubmitResult{Status status;bool queue_may_have_work=false;bool left_accepted=true,right_accepted=true;};
+struct EyeTexture{void*image=nullptr;uint32_t width=0,height=0,usage=0;VkFormat format{};int layout=0;bool gamma=false;};enum class StereoSource{GuestSeparateEyes};
+struct Bridge{bool active=true,wait_ok=true,submit_ok=true,work=true,hold=false;int handoffs=0;std::mutex mutex;std::condition_variable cv;bool entered=false,released=false;
+ bool Active(){return active;}Status WaitFrame(FramePose&){Check(held_graphics+held_vr==1&&!held_render,"WaitFrame queue owner");if(hold){std::unique_lock l(mutex);entered=true;cv.notify_all();Check(cv.wait_for(l,2s,[&]{return released;}),"fixture release missing");}return {wait_ok};}
+ SubmitResult SubmitStereo(const FramePose&,const EyeTexture&l,const EyeTexture&r,StereoSource,const Pose*){Check(held_graphics+held_vr==1&&!held_render&&l.image!=r.image,"submit owner/eyes");return {{submit_ok},work};}
+ Status PostPresentHandoff(){++handoffs;return {true};}
+ void UntilEntered(){std::unique_lock l(mutex);Check(cv.wait_for(l,1s,[&]{return entered;}),"wait entry missing");}void Release(){std::lock_guard l(mutex);released=true;cv.notify_all();}};
+static Bridge bridge;Bridge&HostBridge(){return bridge;}
+}
+struct Presenter{struct Frame{FakeImage image;void*view=nullptr;uint64_t present_tick=0,vr_present_tick=0;vk::Semaphore vr_producer_semaphore=nullptr;uint64_t vr_producer_tick=0;bool busy=false;Frame*vr_right=nullptr;Vr::Pose vr_render_pose{};bool vr_has_render_pose=false,vr_gamma=true;};struct Impl;};
+struct Renderer{Common::Mutex mutex{Common::Mutex::Render};Common::Mutex&GetMutex(){return mutex;}};
+struct CommandScheduler{Graphics&graphics;Timeline state;int submits=0;bool fail_submit=false;explicit CommandScheduler(Graphics&g):graphics(g){g.device.scheduler=&state;}
+ void BeginCommand(){Check(held_render==1&&!held_graphics&&!held_vr,"begin owner");}
+ uint64_t Submit(){Check(held_render==1&&!held_graphics&&!held_vr,"submit owner");Common::LockGuard l(graphics.queue_mutex);if(fail_submit)throw std::runtime_error("injected queue failure");++submits;return state.Next();}
+ uint64_t CurrentTick(){return state.Current();}void Wait(uint64_t n){state.Wait(n);}};
+/*ACTUAL_FRAME_POOL*/
+struct Presenter::Impl{Renderer&renderer;WindowContext&window;CommandScheduler&present_scheduler;FramePool frames;
+ Impl(Renderer&r,WindowContext&w,CommandScheduler&s):renderer(r),window(w),present_scheduler(s),frames(w,s){frames.Initialize(4,vk::Format::Rgba);}void PresentVr(Frame&);};
+/*ACTUAL_PRESENT_PREFIX*/
+struct Rig{bool dedicated;Renderer renderer;WindowContext window;CommandScheduler scheduler{window.graphic_ctx};std::unique_ptr<Presenter::Impl>impl;
+ explicit Rig(bool d):dedicated(d){window.graphic_ctx.vr_queue.enabled=d;impl=std::make_unique<Presenter::Impl>(renderer,window,scheduler);}
+ Timeline& Retirement(){return dedicated?window.graphic_ctx.device.vr_master->state:scheduler.state;}
+ ~Rig(){scheduler.state.Signal(scheduler.CurrentTick()-1);if(auto*m=window.graphic_ctx.device.vr_master)m->state.Signal(m->CurrentTick()-1);impl.reset();}
+ auto Pair(){std::array<Presenter::Frame*,2>p;for(auto&f:p){f=impl->frames.Acquire({4,2},vk::Format::Rgba);f->image.extent={4,2};f->image.format=vk::Format::Rgba;f->image.image=f;}p[0]->vr_right=p[1];p[0]->vr_has_render_pose=true;p[0]->vr_producer_semaphore=reinterpret_cast<void*>(0x1234);p[0]->vr_producer_tick=37;return p;}
+};
+static void Basic(bool dedicated,const std::string& mode){Rig r(dedicated);auto p=r.Pair();if(mode=="partial")Vr::bridge.submit_ok=false;if(mode=="no-work"){Vr::bridge.submit_ok=false;Vr::bridge.work=false;}if(mode=="wait-failure")Vr::bridge.wait_ok=false;if(mode=="inactive")Vr::bridge.active=false;if(mode=="missing-right"){p[0]->vr_right=nullptr;r.impl->frames.Release(p[1]);}
+ int waits=r.Retirement().waits;r.impl->PresentVr(*p[0]);Check(!p[0]->busy&&!p[1]->busy,"both eyes free");Check(r.Retirement().waits==waits,"present blocked on retirement");bool queued=mode=="normal"||mode=="partial";
+ Check((dedicated?p[0]->vr_present_tick:p[0]->present_tick)==(queued?1:0)&& (dedicated?p[1]->vr_present_tick:p[1]->present_tick)==(queued?1:0),"both eye retirement values");Check(r.scheduler.submits==(!dedicated&&queued?1:0),"shared queue used by dedicated path");
+ if(dedicated){auto&q=r.window.graphic_ctx.vr_queue;Check(q.signals==(queued?1:0),"retirement admission");if(queued)Check(q.waits==1&&q.producer==reinterpret_cast<void*>(0x1234)&&q.producer_tick==37,"actual producer semaphore/value missing");}
+ if(queued){auto acquired=std::async(std::launch::async,[&]{return r.impl->frames.Acquire({4,2},vk::Format::Rgba);});r.Retirement().Blocked();Check(acquired.wait_for(0ms)==std::future_status::timeout,"unsafe image reuse");r.Retirement().Signal(1);auto*a=acquired.get();auto*b=r.impl->frames.Acquire({4,2},vk::Format::Rgba);Check(a!=b,"distinct eye reuse");r.impl->frames.Release(a);r.impl->frames.Release(b);}}
+static void Shutdown(bool dedicated){Rig r(dedicated);auto p=r.Pair();r.impl->PresentVr(*p[0]);auto&timeline=r.Retirement();auto done=std::async(std::launch::async,[&]{r.impl.reset();});timeline.Blocked();Check(r.window.graphic_ctx.device.destroyed==0,"destroyed pending images");timeline.Signal(1);done.get();Check(r.window.graphic_ctx.device.unsafe==0,"unsafe destruction");}
+static void Failure(bool dedicated,bool retire=false){Rig r(dedicated);auto p=r.Pair();if(dedicated){r.window.graphic_ctx.vr_queue.fail_submit=!retire;r.window.graphic_ctx.vr_queue.fail_retire=retire;}else r.scheduler.fail_submit=true;bool caught=false;try{r.impl->PresentVr(*p[0]);}catch(const std::runtime_error&){caught=true;}Check(caught&&p[0]->busy&&p[1]->busy,"failed queue submit released images");}
+static void PerImage(bool dedicated){Rig r(dedicated);auto a=r.Pair(),b=r.Pair();r.impl->PresentVr(*a[0]);r.impl->PresentVr(*b[0]);auto tick=[&](auto*f){return dedicated?f->vr_present_tick:f->present_tick;};Check(tick(a[0])==1&&tick(a[1])==1&&tick(b[0])==2&&tick(b[1])==2,"per-pair retirement identity");auto first=std::async(std::launch::async,[&]{return r.impl->frames.Acquire({4,2},vk::Format::Rgba);});r.Retirement().Blocked();r.Retirement().Signal(1);bool earlier=first.wait_for(100ms)==std::future_status::ready;if(!earlier)r.Retirement().Signal(2);auto*f=first.get();Check(earlier&&f==a[0],"earlier pair waited for unrelated later work");r.Retirement().Signal(2);r.impl->frames.Release(f);}
+static void Contention(){Rig r(true);auto p=r.Pair();Vr::bridge.hold=true;auto presenting=std::async(std::launch::async,[&]{r.impl->PresentVr(*p[0]);});Vr::bridge.UntilEntered();auto producer=std::async(std::launch::async,[&]{Common::LockGuard lock(r.window.graphic_ctx.queue_mutex);return true;});bool independent=producer.wait_for(100ms)==std::future_status::ready;Vr::bridge.Release();presenting.get();producer.get();Check(independent,"WaitGetPoses blocked graphics queue");}
+static void Selection(){using Libs::Graphics::Vr::SelectDedicatedQueue;for(unsigned n=0;n<5;++n){Check(SelectDedicatedQueue(false,n,false)==UINT32_MAX,"non-VR changed queue count");Check(SelectDedicatedQueue(true,n,false)==(n>=2?1u:UINT32_MAX),"capacity fallback");Check(SelectDedicatedQueue(true,n,true)==(n>=3?2u:UINT32_MAX),"readback collision");}}
+int main(int argc,char**argv){try{std::string mode=argc>1?argv[1]:"selection";bool dedicated=mode.starts_with("vr-");std::string test=dedicated?mode.substr(3):mode;if(test=="selection")Selection();else if(test=="contention")Contention();else if(test=="shutdown")Shutdown(dedicated);else if(test=="failure"||test=="retire-failure")Failure(dedicated,test=="retire-failure");else if(test=="per-image")PerImage(dedicated);else Basic(dedicated,test);std::printf("PASS %s\n",mode.c_str());return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}

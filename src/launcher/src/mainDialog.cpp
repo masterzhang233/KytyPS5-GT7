@@ -5,6 +5,7 @@
 #include "configurationListWidget.h"
 #include "controllerLightbar.h"
 #include "gameContent.h"
+#include "gt7Settings.h"
 #include "patchesDialog.h"
 #include "updateChecker.h"
 
@@ -21,6 +22,8 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcess>
+#include <QProgressDialog>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
@@ -131,6 +134,10 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 		        }
 	        });
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
+	connect(m_ui->gt7_start_vr_button, &QPushButton::clicked, m_ui->widget,
+	        &ConfigurationListWidget::StartGt7Vr);
+	connect(m_ui->gt7_settings_button, &QPushButton::clicked, m_ui->widget,
+	        &ConfigurationListWidget::ConfigureGt7Rendering);
 	connect(m_ui->check_updates_link, &QLabel::linkActivated, this,
 	        [this](const QString&) { m_update_checker->Check(true); });
 	connect(m_update_checker, &UpdateChecker::CheckingChanged, m_ui->check_updates_link,
@@ -292,6 +299,7 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 		game = QDir(info.basedir).filePath(info.elf);
 	}
 	args << "--game" << game;
+	args << Gt7ProfileArguments(info);
 
 	const auto patch_plan = PatchesDialog::PatchPlanPath(info.title_id);
 	if (QFileInfo::exists(patch_plan)) {
@@ -412,6 +420,14 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 
 	QFileInfo f(interpreter);
 	auto      dir = f.absoluteDir();
+	const bool gt7_profile = HasGt7Profile(info);
+	if (gt7_profile && QFileInfo::exists(PatchesDialog::PatchPlanPath(info.title_id))) {
+		QMessageBox::critical(
+		    this, tr("GT7 profile conflict"),
+		    tr("Disable the custom game patches before using GT7 internal rendering or SteamVR. "
+		       "These profiles require their own verified patch plan."));
+		return;
+	}
 
 	auto args = CreateEmulatorArgs(info);
 	if (args.isEmpty()) {
@@ -419,7 +435,65 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 		QApplication::quit();
 		return;
 	}
+	if (gt7_profile) {
+		// The same strict core check protects both this UI and direct CLI users. This process
+		// exits before loading the game, creating caches, or initializing SteamVR.
+		QProcess check;
+		check.setProgram(interpreter);
+		check.setArguments(args + QStringList {QStringLiteral("--gt7-check-only")});
+		check.setWorkingDirectory(dir.path());
+		QProgressDialog progress(tr("Checking GT7 version and patch compatibility..."),
+		                         tr("Cancel"), 0, 0, this);
+		progress.setWindowModality(Qt::WindowModal);
+		progress.setMinimumDuration(0);
+		progress.show();
+		QEventLoop loop;
+		QTimer timeout;
+		timeout.setSingleShot(true);
+		bool interrupted = false;
+		connect(&check, &QProcess::finished, &loop, &QEventLoop::quit);
+		connect(&check, &QProcess::errorOccurred, &loop, &QEventLoop::quit);
+		const auto cancel = [&]() {
+			interrupted = true;
+			check.kill();
+			loop.quit();
+		};
+		connect(&progress, &QProgressDialog::canceled, &loop, cancel);
+		connect(&timeout, &QTimer::timeout, &loop, cancel);
+		check.start();
+		timeout.start(30000);
+		loop.exec();
+		timeout.stop();
+		if (check.state() != QProcess::NotRunning) {
+			check.kill();
+			check.waitForFinished(3000);
+		}
+		// Programmatic close emits canceled too; it must not turn a successful check into
+		// a user cancellation and prevent the game from starting.
+		disconnect(&progress, nullptr, &loop, nullptr);
+		progress.close();
+		if (interrupted) {
+			return;
+		}
+		if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0 ||
+		    check.error() == QProcess::FailedToStart) {
+			const auto detail = QString::fromUtf8(check.readAllStandardError()) +
+			                    QString::fromUtf8(check.readAllStandardOutput());
+			QMessageBox::critical(this, tr("GT7 compatibility check failed"),
+			                      detail.isEmpty() ? check.errorString() : detail);
+			return;
+		}
+	}
 
+	if (gt7_profile) {
+		// QProcess quotes individual arguments. Do not pass user-selected game paths through
+		// cmd.exe, where percent expansion can change even a double-quoted path.
+		process->setProgram(interpreter);
+		process->setArguments(args);
+#if defined(_WIN32)
+		process->setNativeArguments({});
+#endif
+	} else {
 #ifdef __linux__
 	auto bash_file_name = dir.filePath(KYTY_BASH_FILE);
 	if (!CreateBashScript(interpreter, args, bash_file_name)) {
@@ -458,6 +532,7 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	process->setProgram(interpreter);
 	process->setArguments(args);
 #endif
+	}
 	process->setWorkingDirectory(dir.path());
 #if defined(_WIN32)
 	process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
@@ -519,6 +594,9 @@ void MainDialogPrivate::ReadSettings(QSettings& s) {
 }
 
 void MainDialogPrivate::Run() {
+	if (m_process.state() != QProcess::NotRunning) {
+		return;
+	}
 	m_running_item = m_ui->widget->GetSelectedItem();
 	if (m_running_item == nullptr) {
 		return;
@@ -529,6 +607,9 @@ void MainDialogPrivate::Run() {
 
 	auto info = m_ui->widget->CreateConfiguration(*m_running_item);
 	m_main_dialog->RunInterpreter(&m_process, *info);
+	if (m_process.state() == QProcess::NotRunning && m_running_item != nullptr) {
+		m_running_item->SetRunning(false);
+	}
 
 	Update();
 }
@@ -545,6 +626,25 @@ void MainDialogPrivate::Update() {
 	}
 
 	m_ui->widget->SetRunEnabled(run_enabled);
+	const bool gt7_selected = item != nullptr &&
+	    item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
+	m_ui->gt7_start_vr_button->setEnabled(run_enabled && gt7_selected);
+	m_ui->gt7_settings_button->setEnabled(run_enabled && gt7_selected);
+	if (gt7_selected) {
+		const auto info = m_ui->widget->CreateConfiguration(*item);
+		const auto output = EnumToText(info->screen_resolution);
+		const auto desktop = info->gt7_desktop_height == 0
+		                         ? tr("Native") : tr("%1p nominal").arg(info->gt7_desktop_height);
+		m_ui->gt7_feature_summary->setText(
+		    info->gt7_vr_enabled
+		        ? tr("SteamVR · internal eye scale %1% · desktop output %2")
+		              .arg(info->gt7_vr_scale).arg(output)
+		        : tr("Desktop · internal 3D %1 · window output %2 · VR preset %3%")
+		              .arg(desktop, output).arg(info->gt7_vr_scale));
+	} else {
+		m_ui->gt7_feature_summary->setText(
+		    tr("Select GT7 to configure internal 3D resolution or launch SteamVR."));
+	}
 	if (m_process.state() != QProcess::NotRunning) {
 		m_lightbar.Stop();
 		return;

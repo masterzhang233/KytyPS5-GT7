@@ -43,6 +43,8 @@ public:
 	bool EnsureGameDirectory();
 	void ScanGameDirectory();
 	void ViewTrophies();
+	void ConfigureGt7Rendering();
+	void StartGt7Vr();
 
 signals:
 
@@ -70,6 +72,7 @@ protected slots:
 	void filter_configurations(const QString& text);
 
 private:
+	void               EditConfiguration(bool focus_gt7);
 	void               SelectItem(QTreeWidgetItem* witem);
 	void               ApplyCompatibility();
 	void               UpdateToolbarIcons();

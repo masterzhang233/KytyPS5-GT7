@@ -30,6 +30,7 @@ public:
 
 	void                      SetGlobalSettings(const QStringList& dirs);
 	[[nodiscard]] QStringList GetGameDirectories() const;
+	void                      FocusGt7Rendering();
 
 signals:
 	void PreviewControllerColor(const QString& color);

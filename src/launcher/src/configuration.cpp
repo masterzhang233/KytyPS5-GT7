@@ -16,6 +16,9 @@ QVariantMap Configuration::GameSettings() const {
 	KYTY_CFG_SET(trophy_enabled);
 	KYTY_CFG_SET(bindless_images_enabled);
 	KYTY_CFG_SET(reflections_half_rate);
+	KYTY_CFG_SET(gt7_desktop_height);
+	KYTY_CFG_SET(gt7_vr_enabled);
+	KYTY_CFG_SET(gt7_vr_scale);
 	KYTY_CFG_SET(skip_shader_hashes);
 	KYTY_CFG_SET(vblank_frequency);
 	KYTY_CFG_SET(console_language);
@@ -62,6 +65,16 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 	trophy_enabled   = s.value("trophy_enabled", trophy_enabled).toBool();
 	KYTY_CFG_GET(bindless_images_enabled);
 	reflections_half_rate = s.value("reflections_half_rate", false).toBool();
+	gt7_desktop_height = s.value("gt7_desktop_height", 0).toInt();
+	if (gt7_desktop_height != 0 && gt7_desktop_height != 1080 &&
+	    gt7_desktop_height != 1440 && gt7_desktop_height != 2160) {
+		gt7_desktop_height = 0;
+	}
+	gt7_vr_enabled = s.value("gt7_vr_enabled", false).toBool();
+	gt7_vr_scale = s.value("gt7_vr_scale", 100).toInt();
+	if (gt7_vr_scale != 100 && gt7_vr_scale != 110 && gt7_vr_scale != 120 && gt7_vr_scale != 125) {
+		gt7_vr_scale = 100;
+	}
 	KYTY_CFG_GET(skip_shader_hashes);
 	vblank_frequency = s.value("vblank_frequency", vblank_frequency).toInt();
 	console_language = s.value("console_language", console_language).toInt();

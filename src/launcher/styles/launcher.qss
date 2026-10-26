@@ -1,3 +1,43 @@
+QFrame#gt7_feature_panel {
+    background: palette(alternate-base);
+    border: 1px solid palette(mid);
+    border-left: 4px solid palette(highlight);
+    border-radius: 7px;
+}
+
+QLabel#gt7_feature_title {
+    font-size: 22px;
+    font-weight: 700;
+    color: palette(text);
+}
+
+QLabel#gt7_feature_credit, QLabel#gt7_feature_hint {
+    color: palette(text);
+    font-size: 11px;
+}
+
+QLabel#gt7_feature_summary {
+    font-size: 13px;
+    padding-top: 2px;
+    padding-bottom: 3px;
+}
+
+QPushButton#gt7_start_vr_button, QPushButton#gt7_settings_button {
+    padding: 8px 15px;
+    border: 1px solid palette(mid);
+    border-radius: 5px;
+}
+
+QPushButton#gt7_start_vr_button:enabled {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+    font-weight: 600;
+}
+
+QPushButton#gt7_settings_button:hover {
+    background: palette(midlight);
+}
+
 GameListTreeWidget#cfgs_list {
     background: transparent;
     border: 1px solid palette(mid);

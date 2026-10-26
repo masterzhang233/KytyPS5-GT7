@@ -1,0 +1,128 @@
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <vector>
+#define EXIT_IF(x) do {if(x)throw std::runtime_error("EXIT_IF");}while(0)
+static void Check(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
+static void Near(float actual,float expected,const char* why){Check(std::abs(actual-expected)<=2e-4f*std::max(1.0f,std::abs(expected)),why);}
+/*VIEWPORT_HEADER*/
+using namespace Libs::Graphics;
+/*CLIP_STRUCT*/
+struct ShaderVertexInputInfo {
+    static constexpr int RES_MAX=32;
+    ShaderClipSpaceTransform clip_space;
+    int logical_stage=0,resources_num=0,fetch_attrib_reg=0,fetch_buffer_reg=0;
+    uint32_t wave_size=64,scratch_size_dwords=0,pa_cl_vs_out_cntl=0;
+    bool fetch_embedded=false,fetch_external=false;
+    struct Resource {uint32_t fields[4]{};} resources[RES_MAX];
+    struct Destination {int registers_num=0,attr_id=0;} resources_dst[RES_MAX];
+    struct Mesh {uint32_t threads_num[3]{},wave_size=64,host_subgroup_size=64,lds_size_dwords=0,scratch_size_dwords=0,input_primitive=0,primitives_per_group=0,vertices_per_group=0,max_vertices=0,max_primitives=0,provoking_vertex=0,passes=1;bool fast_launch=false;} mesh;
+    struct Tess {uint32_t input_control_points=0,output_control_points=0,ls_stride=0,hs_stride=0,domain=0,partitioning=0,output_topology=0,patch_base=0,patch_size=0,min_level_bits=0,max_level_bits=0;} tess;
+};
+struct ByteWriter {std::vector<uint8_t> bytes;template<class T>void Put(T v){const auto old=bytes.size();bytes.resize(old+sizeof(v));std::memcpy(bytes.data()+old,&v,sizeof(v));}};
+/*STATIC_KEY*/
+/*DISK_KEY*/
+
+namespace spv {enum Op {OpFMul,OpFAdd,OpFDiv,OpFSub,OpCompositeExtract,OpCompositeConstruct};}
+struct Builder {
+    uint32_t next=10;int operations=0;std::map<uint32_t,std::array<float,4>> values;
+    uint32_t AllocateId(){return next++;}
+    uint32_t Value(std::array<float,4> v){const auto id=AllocateId();values[id]=v;return id;}
+    template<class... T>void AddFunction(spv::Op op,uint32_t,uint32_t result,T... args){
+        const std::array<uint32_t,sizeof...(T)> ids{static_cast<uint32_t>(args)...};++operations;
+        auto& v=values[result];
+        if(op==spv::OpCompositeExtract){v[0]=values.at(ids[0]).at(ids[1]);return;}
+        if(op==spv::OpCompositeConstruct){for(unsigned i=0;i<4;++i)v[i]=values.at(ids[i])[0];return;}
+        const float a=values.at(ids[0])[0],b=values.at(ids[1])[0];
+        if(op==spv::OpFMul)v[0]=a*b;else if(op==spv::OpFDiv)v[0]=a/b;
+        else if(op==spv::OpFAdd)v[0]=a+b;else if(op==spv::OpFSub)v[0]=a-b;
+        else throw std::runtime_error("unsupported production instruction");
+    }
+};
+struct EmitterState {Builder builder;struct{ShaderVertexInputInfo* vertex;} input_info;};
+uint32_t TypeF32(EmitterState&){return 1;}
+uint32_t TypeF32Vector(EmitterState&,unsigned){return 2;}
+uint32_t ConstantF32Value(EmitterState& s,float v){return s.builder.Value({v,0,0,0});}
+/*EMITTER_FUNCTIONS*/
+struct GuestViewport {float xscale=641,yscale=-359,zscale=.375f,xoffset=611,yoffset=370,zoffset=.55f;};
+struct Context {
+    struct Screen {uint32_t transform_control=0x43f;GuestViewport viewports[16];} screen;
+    struct Clip {bool clip_disable=false,dx_clip_space=true;} clip;
+    const Screen& GetScreenViewport()const{return screen;}const Clip& GetClipControl()const{return clip;}
+};
+struct Graphics {struct Props {struct{uint32_t maxViewportDimensions[2]{16384,16384};}limits;} props;
+    const Props& GetPhysicalDeviceProperties()const{return props;}};
+struct Buffer {Graphics graphics;const Graphics& GetGraphics()const{return graphics;}};
+namespace vk {struct Viewport {float x=0,y=0,width=0,height=0,minDepth=0,maxDepth=0;};}
+static void Configure(Context& context,bool tess_active,std::array<ShaderVertexInputInfo,3>& vertex_info){
+    Graphics m_graphics;
+/*STAGE_SETUP*/
+}
+static vk::Viewport MapViewport(Context& ctx,uint32_t i){
+    Buffer buffer;const auto& vp=ctx.GetScreenViewport();std::array<vk::Viewport,16> viewports{};
+/*HOST_VIEWPORT*/
+    return viewport;
+}
+namespace IR {enum class ExportTargetKind {Position};}
+static uint32_t Export(EmitterState& state,uint32_t position){
+    struct {IR::ExportTargetKind kind=IR::ExportTargetKind::Position;} exp;
+/*CALL_SITE*/
+}
+int main(){try{
+    int checked=0;
+    for(uint32_t format=0;format<8;++format)for(uint32_t enables=0;enables<64;++enables)
+    for(bool clipped:{false,true})for(bool dx:{false,true})for(float incoming_w:{.5f,2.0f,-.5f,-2.0f}){
+        Context context;context.screen.transform_control=(format<<8)|enables;
+        context.clip={clipped,dx};
+        for(bool tess:{false,true}){
+            std::array<ShaderVertexInputInfo,3> stages;Configure(context,tess,stages);
+            const unsigned output=tess?2:0;
+            Check(stages[output].clip_space.position_format==(format<<8),"final-stage format selection");
+            Check(stages[tess?0:2].clip_space.position_format==0x400,"intermediate stage was transformed");
+            Check(stages[1].clip_space.position_format==0x400,"HS format was transformed");
+        }
+        std::array<ShaderVertexInputInfo,3> stages;Configure(context,false,stages);
+        auto& vertex=stages[0];EmitterState state;state.input_info.vertex=&vertex;
+        const std::array<float,4> input{1.25f,-.75f,.4f,incoming_w};
+        const auto id=state.builder.Value(input);const auto result=Export(state,id);
+        const auto pos=state.builder.values.at(result);const auto mapped=MapViewport(context,0);
+        // Independent AMD setup reference: derive reciprocal W directly, then bypass
+        // each coordinate divide iff that coordinate was already predivided.
+        const float inv_w=(format&4)?1.0f/incoming_w:incoming_w;
+        const float nx=input[0]*((format&1)?1.0f:inv_w),ny=input[1]*((format&1)?1.0f:inv_w);
+        const float nz=input[2]*((format&2)?1.0f:inv_w);
+        const auto& raw=context.screen.viewports[0];
+        const float sx=(enables&1)?raw.xscale:1,ox=(enables&2)?raw.xoffset:0;
+        const float sy=(enables&4)?raw.yscale:1,oy=(enables&8)?raw.yoffset:0;
+        const float sz=(enables&16)?raw.zscale:1,oz=(enables&32)?raw.zoffset:0;
+        Near(1.0f/pos[3],inv_w,"reciprocal W mapping");
+        Near(mapped.x+mapped.width*(pos[0]/pos[3]+1)*.5f,sx*nx+ox,"screen X mismatch");
+        Near(mapped.y+mapped.height*(pos[1]/pos[3]+1)*.5f,sy*ny+oy,"screen Y mismatch");
+        const float zndc=pos[2]/pos[3];
+        Near(mapped.minDepth+(mapped.maxDepth-mapped.minDepth)*(dx?zndc:(zndc+1)*.5f),sz*nz+oz,"screen Z mismatch");
+        if(format==4&&!clipped){Check(result==id&&state.builder.operations==0,"normal 0x43f position path generated new SPIRV");}
+        ++checked;
+    }
+    std::set<std::vector<uint32_t>> static_keys;std::set<std::vector<uint8_t>> disk_keys;
+    for(uint32_t format=0;format<8;++format){
+        ShaderVertexInputInfo v;v.clip_space.position_format=format<<8;
+        std::vector<uint32_t> sk;BuildStageStaticKey(v,sk);ByteWriter dk;AppendInputKey(dk,v);
+        Check(static_keys.insert(sk).second,"static key omitted VTE format");Check(disk_keys.insert(dk.bytes).second,"disk key omitted VTE format");
+    }
+    for(float special:{0.0f,-0.0f,INFINITY,-INFINITY}){
+        ShaderVertexInputInfo v;EmitterState state;state.input_info.vertex=&v;
+        const auto id=state.builder.Value({special,special,special,special});
+        Check(Export(state,id)==id&&state.builder.operations==0,"default special-value bits changed");
+    }
+    // Independent viewport slots retain their own scales and offsets with all controls.
+    Context c;c.screen.viewports[3]={12,34,.1f,56,78,.2f};const auto vp=MapViewport(c,3);
+    Near(vp.x,44,"viewport slot X");Near(vp.y,44,"viewport slot Y");Near(vp.width,24,"viewport slot width");
+    std::printf("PASS screen mappings=%d; final VS/TES selection; 8 static/disk keys; default bit identity; viewport slot\n",checked);return 0;
+}catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}

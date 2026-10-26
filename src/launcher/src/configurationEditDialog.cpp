@@ -128,6 +128,12 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 	InitGameDirectories();
 	m_ui->controller_group->setVisible(false);
 	m_ui->settings_button->setVisible(false);
+	m_ui->gt7_group->setVisible(
+	    info.title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0);
+	connect(m_ui->checkBox_gt7_vr, &QCheckBox::toggled, this, [this](bool enabled) {
+		m_ui->comboBox_gt7_desktop_height->setEnabled(!enabled);
+		m_ui->comboBox_gt7_vr_scale->setEnabled(enabled);
+	});
 
 	connect(m_ui->ok_button, &QPushButton::clicked, this, &ConfigurationEditDialog::save);
 	connect(m_ui->cancel_button, &QPushButton::clicked, this, &QDialog::reject);
@@ -178,6 +184,17 @@ QByteArray ConfigurationEditDialog::g_last_geometry;
 
 ConfigurationEditDialog::~ConfigurationEditDialog() {
 	delete m_ui;
+}
+
+void ConfigurationEditDialog::FocusGt7Rendering() {
+	if (m_info.title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0) {
+		m_ui->gt7_group->setVisible(true);
+		if (m_ui->checkBox_gt7_vr->isChecked()) {
+			m_ui->comboBox_gt7_vr_scale->setFocus(Qt::OtherFocusReason);
+		} else {
+			m_ui->comboBox_gt7_desktop_height->setFocus(Qt::OtherFocusReason);
+		}
+	}
 }
 
 void ConfigurationEditDialog::WriteSettings(QSettings& s) {
@@ -279,6 +296,23 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->checkBox_trophy_notifications->setChecked(info.trophy_enabled);
 	m_ui->checkBox_bindless->setChecked(info.bindless_images_enabled);
 	m_ui->checkBox_reflections_half_rate->setChecked(info.reflections_half_rate);
+	m_ui->comboBox_gt7_desktop_height->clear();
+	m_ui->comboBox_gt7_desktop_height->addItem(tr("Native (unchanged)"), 0);
+	for (const auto height: {1080, 1440, 2160}) {
+		m_ui->comboBox_gt7_desktop_height->addItem(QString::number(height), height);
+	}
+	m_ui->comboBox_gt7_desktop_height->setCurrentIndex(
+	    m_ui->comboBox_gt7_desktop_height->findData(info.gt7_desktop_height));
+	m_ui->comboBox_gt7_vr_scale->clear();
+	m_ui->comboBox_gt7_vr_scale->addItem(tr("100% - 2400 x 2040 / eye"), 100);
+	m_ui->comboBox_gt7_vr_scale->addItem(tr("110% - 2640 x 2244 / eye"), 110);
+	m_ui->comboBox_gt7_vr_scale->addItem(tr("120% - 2880 x 2448 / eye"), 120);
+	m_ui->comboBox_gt7_vr_scale->addItem(tr("125% - 3000 x 2550 / eye"), 125);
+	m_ui->comboBox_gt7_vr_scale->setCurrentIndex(
+	    m_ui->comboBox_gt7_vr_scale->findData(info.gt7_vr_scale));
+	m_ui->checkBox_gt7_vr->setChecked(info.gt7_vr_enabled);
+	m_ui->comboBox_gt7_desktop_height->setEnabled(!info.gt7_vr_enabled);
+	m_ui->comboBox_gt7_vr_scale->setEnabled(info.gt7_vr_enabled);
 	m_ui->lineEdit_skip_shaders->setText(info.skip_shader_hashes);
 	m_ui->spinBox_vblank_frequency->setValue(info.vblank_frequency);
 	m_ui->comboBox_console_language->clear();
@@ -441,6 +475,9 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 	info.trophy_enabled            = ui.checkBox_trophy_notifications->isChecked();
 	info.bindless_images_enabled   = ui.checkBox_bindless->isChecked();
 	info.reflections_half_rate     = ui.checkBox_reflections_half_rate->isChecked();
+	info.gt7_desktop_height        = ui.comboBox_gt7_desktop_height->currentData().toInt();
+	info.gt7_vr_enabled            = ui.checkBox_gt7_vr->isChecked();
+	info.gt7_vr_scale              = ui.comboBox_gt7_vr_scale->currentData().toInt();
 	info.skip_shader_hashes        = ui.lineEdit_skip_shaders->text().simplified().remove(' ');
 	info.vblank_frequency          = ui.spinBox_vblank_frequency->value();
 	info.console_language          = ui.comboBox_console_language->currentIndex();

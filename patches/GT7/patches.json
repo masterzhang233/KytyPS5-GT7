@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "PPSA01317",
+  "version": "01.710.000",
+  "process": "eboot.bin",
+  "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf",
+  "patches": [
+    {
+      "file": "GT7-Desktop-Internal-Native.json",
+      "sha256": "68ec5a39891c0559fc02f4e4b000c9dccf71a31d46f626e42abbc57be482ff2d"
+    },
+    {
+      "file": "GT7-Desktop-Internal-1080.json",
+      "sha256": "0574c270e1f32b15c9a8b3904fc77da11823c0d32cda2682b69f6bf62cc5faf3"
+    },
+    {
+      "file": "GT7-Desktop-Internal-1440.json",
+      "sha256": "6fa372b85c46d26ab82ed10379746c0ecda60b25924220870fe9f895351bedde"
+    },
+    {
+      "file": "GT7-Desktop-Internal-2160.json",
+      "sha256": "3a80a7b4465da0d70f319dd1e7e6d4127d40ccc248672d2365f539ee9221c0f8"
+    },
+    {
+      "file": "GT7-SteamVR-EyeScale-100.json",
+      "sha256": "bbd6157f1db3b2070c686ecf61382ed692169e0c5e42ed9675d124b64bb72977"
+    },
+    {
+      "file": "GT7-SteamVR-EyeScale-110.json",
+      "sha256": "e0bff28303b74d71333ce56c36fcf2da147d79c2799771bdb658dd4f878ce2f6"
+    },
+    {
+      "file": "GT7-SteamVR-EyeScale-120.json",
+      "sha256": "4d2de2bbed7cbad9eb0f8f8ea01cdc888c001918b6c477067693e80fe061375a"
+    },
+    {
+      "file": "GT7-SteamVR-EyeScale-125.json",
+      "sha256": "802612cf1f9ea2dad7f98c05ddfb9a983a9c7a33791e314ec6d09bd9be820223"
+    }
+  ]
+}

@@ -756,6 +756,37 @@ void ConfigurationListWidget::ScanGameDirectory() {
 }
 
 void ConfigurationListWidget::edit_configuration() {
+	EditConfiguration(false);
+}
+
+void ConfigurationListWidget::ConfigureGt7Rendering() {
+	if (m_selected_item != nullptr &&
+	    m_selected_item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"),
+	                                               Qt::CaseInsensitive) == 0) {
+		EditConfiguration(true);
+	}
+}
+
+void ConfigurationListWidget::StartGt7Vr() {
+	if (!m_run_enabled || m_selected_item == nullptr ||
+	    m_selected_item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"),
+	                                               Qt::CaseInsensitive) != 0) {
+		return;
+	}
+	auto info = CreateConfiguration(*m_selected_item);
+	info->gt7_vr_enabled = true;
+	info->custom_settings = true;
+	m_selected_item->GetInfo().custom_settings = true;
+	const auto game_path = info->game_path;
+	delete m_custom_infos.take(game_path);
+	m_custom_infos.insert(game_path, info.release());
+	WriteSettings();
+	m_selected_item->Update();
+	emit Select();
+	emit Run();
+}
+
+void ConfigurationListWidget::EditConfiguration(bool focus_gt7) {
 	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
 	if (item == nullptr) {
 		return;
@@ -764,6 +795,9 @@ void ConfigurationListWidget::edit_configuration() {
 	auto                    info = CreateConfiguration(*item);
 	ConfigurationEditDialog dlg(*info, this);
 	dlg.setWindowTitle(tr("Edit game config"));
+	if (focus_gt7) {
+		dlg.FocusGt7Rendering();
+	}
 	connect(&dlg, &ConfigurationEditDialog::PreviewControllerColor, this,
 	        &ConfigurationListWidget::PreviewControllerColor);
 

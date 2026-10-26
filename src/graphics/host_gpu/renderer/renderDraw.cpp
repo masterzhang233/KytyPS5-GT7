@@ -452,19 +452,21 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, const CommandR
 	for (uint32_t i = 0; i < viewport_count; i++) {
 		const auto& guest    = vp.viewports[i];
 		auto&       viewport = viewports[i];
+		const auto mapped = ViewportTransform::Resolve(vp.transform_control,
+		    guest.xscale, guest.yscale, guest.zscale, guest.xoffset, guest.yoffset, guest.zoffset,
+		    ctx.GetClipControl().dx_clip_space);
 		if (ctx.GetClipControl().clip_disable) {
 			const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
 			viewport.width  = static_cast<float>(std::min(limits.maxViewportDimensions[0], 16384u));
 			viewport.height = static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u));
 		} else {
-			viewport.x      = guest.xoffset - guest.xscale;
-			viewport.y      = guest.yoffset - guest.yscale;
-			viewport.width  = guest.xscale * 2.0f;
-			viewport.height = guest.yscale * 2.0f;
+			viewport.x      = mapped.x;
+			viewport.y      = mapped.y;
+			viewport.width  = mapped.width;
+			viewport.height = mapped.height;
 		}
-		viewport.minDepth =
-		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
-		viewport.maxDepth = guest.zscale + guest.zoffset;
+		viewport.minDepth = mapped.min_depth;
+		viewport.maxDepth = mapped.max_depth;
 
 		const auto final_scissor =
 		    calc_final_scissor(vp, ctx.GetScanModeControl(), framebuffer_extent, i);
