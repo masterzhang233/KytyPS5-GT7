@@ -5,11 +5,13 @@ SteamVR. Supply your own unpacked game. The release contains no game executable,
 save data, captured shaders, or generated caches.
 
 The profiles support **PPSA01317, version 01.710.000**. Compatibility is checked from the
-normalized executable image rather than the outer `eboot.bin` container. A PS5 SELF and an
-extracted ELF are both accepted when their `PT_LOAD` program segments match this audited image:
+normalized executable image rather than the outer `eboot.bin` container. The identity covers the
+ELF entry point plus every `PT_LOAD` segment's flags, virtual address, file and memory sizes,
+alignment and uncompressed bytes; container file offsets are excluded. A PS5 SELF and an extracted
+ELF are both accepted when those loading semantics match this audited image:
 
 ```text
-0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6
+f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf
 ```
 
 This removes dependence on SELF packaging metadata while retaining code identity and original-byte

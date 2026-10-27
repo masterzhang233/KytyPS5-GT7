@@ -7,36 +7,36 @@
   "patches": [
     {
       "file": "GT7-Desktop-Internal-Native.json",
-      "sha256": "fd16824171d6aee7d06e36644b0b65458567aade3cb451d0bf6c1caa0adfdbc0"
+      "sha256": "a1dbe85550fa49bf5af50ada78a1c1a097f05972aad4801347f779b639bfee32"
     },
     {
       "file": "GT7-Desktop-Internal-1080.json",
-      "sha256": "cd8afe59cf9748b89de5e99a22bd698b01854cfa59c07b9125d2a5fd9a942e32"
+      "sha256": "bc2a5d1a998c6bd7e84ef7359583d5619759b3da356c14932cb139432e48ed6f"
     },
     {
       "file": "GT7-Desktop-Internal-1440.json",
-      "sha256": "d01a0931a86ce410f110190a08bdbe8ddc3a697116febe154a23fc2f42d810ab"
+      "sha256": "38e81adbd4d00ed4ba13ded01fe9acb25f5ade67110639d34c2f0c682d1da700"
     },
     {
       "file": "GT7-Desktop-Internal-2160.json",
-      "sha256": "f953be106964fe08d225d543739e16b27d664be99dc6ce48be2d00893a7f71c2"
+      "sha256": "b2f2e3c806d0b63e954da9bfa9cb3604df29f2adf082284835c96f48f6764eae"
     },
     {
       "file": "GT7-SteamVR-EyeScale-100.json",
-      "sha256": "369badac709a1c0e5b962ebeea80d59eb37e70cca5df3303c4b03165571d0af6"
+      "sha256": "6aec450a0d17f11fc31c8b0f2aad8652798a1a370a8b5aa624a34b3c161ffe96"
     },
     {
       "file": "GT7-SteamVR-EyeScale-110.json",
-      "sha256": "4f55dd0b66054fb5c7b2567a37a1a27dd3c116b32486453288bff4c083d79b02"
+      "sha256": "72794dad2b27efcfa1ccc7050f785a4bb05f421fff648e1011230783b3d29661"
     },
     {
       "file": "GT7-SteamVR-EyeScale-120.json",
-      "sha256": "85637fc20531f01fb259b0de51a86dd556afada486865c4058354b94e300b128"
+      "sha256": "f42467e6d9a5419da95ab701ec335d7782dfd043ad0011ce41faef39d1e57f75"
     },
     {
       "file": "GT7-SteamVR-EyeScale-125.json",
-      "sha256": "c8059c711373c6b3955226b22f7ed48d23dc47248634b7fe922248f874cd97ab"
+      "sha256": "6ad6db4890004d8d22ff6c187ea11c3b397c01c352f5bd87df341791e88babd3"
     }
   ],
-  "executable_image_sha256": "0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6"
+  "executable_image_sha256": "f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf"
 }

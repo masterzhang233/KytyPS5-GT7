@@ -10,11 +10,11 @@ namespace Loader::Gt7Profile {
 // manifests and diagnostics; compatibility is decided by EbootImageSha256 below.
 inline constexpr const char* EbootSha256 =
     "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf";
-// SHA-256 of the canonical PT_LOAD image (program-header order; each segment contributes
-// p_type, p_flags, p_vaddr, p_filesz and its uncompressed bytes). Unlike EbootSha256 this
-// is independent of whether the executable is stored as a SELF or as its extracted ELF.
+// SHA-256 of the canonical executable image (ELF entry point and PT_LOAD count, followed in
+// program-header order by each segment's p_type, p_flags, p_vaddr, p_filesz, p_memsz, p_align
+// and uncompressed bytes). Unlike EbootSha256 this is independent of SELF/ELF file offsets.
 inline constexpr const char* EbootImageSha256 =
-    "0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6";
+    "f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf";
 
 struct Request {
     int desktop_height = -1; // -1: not requested; 0: native

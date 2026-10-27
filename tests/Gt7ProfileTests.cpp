@@ -71,8 +71,11 @@ void PutBytes(std::vector<uint8_t>& bytes, size_t offset, const void* value, siz
 	std::memcpy(bytes.data() + offset, value, size);
 }
 
+enum class FixtureMutation { None, Entry, MemorySize, Alignment };
+
 std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, bool self,
-	                                           bool compressed = false) {
+	                                           bool compressed = false,
+	                                           FixtureMutation mutation = FixtureMutation::None) {
 	constexpr std::array<uint8_t, 5> first {'a', 'b', 'c', 'd', 'e'};
 	constexpr std::array<uint8_t, 4> second {1, 2, 3, 4};
 	const size_t elf_offset = self ? sizeof(TestSelfHeader) + 2 * sizeof(TestSelfSegment) : 0;
@@ -84,7 +87,7 @@ std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, 
 	elf.type               = 0xfe10;
 	elf.machine            = 62;
 	elf.version            = 1;
-	elf.entry              = 0x1000;
+	elf.entry              = mutation == FixtureMutation::Entry ? 0x1001 : 0x1000;
 	elf.program_offset     = sizeof(TestElfHeader);
 	elf.header_size        = sizeof(TestElfHeader);
 	elf.program_entry_size = sizeof(TestProgramHeader);
@@ -96,8 +99,11 @@ std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, 
 	                            .offset      = 0x200,
 	                            .vaddr       = 0x1000,
 	                            .file_size   = first.size(),
-	                            .memory_size = first.size(),
-	                            .alignment   = 0x1000};
+	                            .memory_size = first.size() +
+	                                           (mutation == FixtureMutation::MemorySize ? 1 : 0),
+	                            .alignment   = mutation == FixtureMutation::Alignment
+	                                               ? uint64_t {0x2000}
+	                                               : uint64_t {0x1000}};
 	TestProgramHeader program1 {.type        = 1,
 	                            .flags       = 6,
 	                            .offset      = 0x300,
@@ -175,16 +181,32 @@ int main(int argc, char* argv[]) {
 	const auto self  = std::filesystem::temp_directory_path() / "kyty_gt7_profile_self_test.bin";
 	const auto compressed =
 	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_compressed_self_test.bin";
+	const auto changed_entry =
+	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_entry_test.bin";
+	const auto changed_memory_size =
+	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_memsz_test.bin";
+	const auto changed_alignment =
+	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_align_test.bin";
 	WriteExecutableFixture(plain, false);
 	WriteExecutableFixture(self, true);
 	WriteExecutableFixture(compressed, true, true);
+	WriteExecutableFixture(changed_entry, false, false, FixtureMutation::Entry);
+	WriteExecutableFixture(changed_memory_size, false, false, FixtureMutation::MemorySize);
+	WriteExecutableFixture(changed_alignment, false, false, FixtureMutation::Alignment);
 	std::string plain_digest;
 	std::string self_digest;
 	Require(ExecutableImageSha256(plain, plain_digest, error), "plain ELF image hashing failed");
 	Require(ExecutableImageSha256(self, self_digest, error), "SELF image hashing failed");
-	Require(plain_digest == "19406af872baa5e0f57aa444365ec78a96388d2911ad7c5a87ba3f61dcca6e33",
+	Require(plain_digest == "946e022841d698fde7598cd8ceecaec32c4c61053f25018aa3ae023e62ba7aa2",
 	        "synthetic executable-image digest changed");
 	Require(self_digest == plain_digest, "SELF and plain ELF image identities differ");
+	for (const auto& changed : {changed_entry, changed_memory_size, changed_alignment}) {
+		std::string changed_digest;
+		Require(ExecutableImageSha256(changed, changed_digest, error),
+		        "changed ELF image hashing failed");
+		Require(changed_digest != plain_digest,
+		        "ELF load semantics changed without changing executable-image identity");
+	}
 	uint64_t file_offset = 0;
 	Require(FileOffset(plain, 0x1002, 2, file_offset, error) && file_offset == 0x202,
 	        "plain ELF RVA translation failed");
@@ -196,6 +218,9 @@ int main(int argc, char* argv[]) {
 	std::filesystem::remove(plain);
 	std::filesystem::remove(self);
 	std::filesystem::remove(compressed);
+	std::filesystem::remove(changed_entry);
+	std::filesystem::remove(changed_memory_size);
+	std::filesystem::remove(changed_alignment);
 
 	for (int index = 1; index < argc; ++index) {
 		Require(ExecutableImageSha256(argv[index], digest, error),

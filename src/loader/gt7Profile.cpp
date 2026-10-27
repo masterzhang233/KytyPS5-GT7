@@ -86,9 +86,12 @@ struct ImageSegment {
     uint64_t rva = 0;
     uint64_t file_offset = 0;
     uint64_t bytes = 0;
+    uint64_t memory_size = 0;
+    uint64_t alignment = 0;
 };
 
 struct ExecutableImage {
+    uint64_t entry = 0;
     std::vector<ImageSegment> load_segments;
 };
 
@@ -180,6 +183,7 @@ bool InspectExecutable(const std::filesystem::path& path, ExecutableImage& image
     if (!InRange(file_size, programs_offset, programs_bytes))
         return Fail(error, "ELF program-header table is outside the executable");
 
+    image.entry = elf.entry;
     image.load_segments.clear();
     for (size_t index = 0; index < elf.program_count; ++index) {
         ProgramHeader program{};
@@ -206,7 +210,9 @@ bool InspectExecutable(const std::filesystem::path& path, ExecutableImage& image
         }
         if (!InRange(file_size, payload_offset, program.file_size))
             return Fail(error, "PT_LOAD bytes are outside the executable");
-        image.load_segments.push_back({program.flags, program.vaddr, payload_offset, program.file_size});
+        image.load_segments.push_back({program.flags, program.vaddr, payload_offset,
+                                       program.file_size, program.memory_size,
+                                       program.alignment});
     }
     if (image.load_segments.empty()) return Fail(error, "executable has no PT_LOAD segments");
     for (size_t left = 0; left < image.load_segments.size(); ++left) {
@@ -285,10 +291,12 @@ private:
     BCRYPT_HASH_HANDLE value_ = nullptr;
 };
 
-void Put32(std::array<uint8_t, 24>& bytes, size_t offset, uint32_t value) {
+template <size_t Size>
+void Put32(std::array<uint8_t, Size>& bytes, size_t offset, uint32_t value) {
     for (size_t index = 0; index < 4; ++index) bytes[offset + index] = static_cast<uint8_t>(value >> (index * 8));
 }
-void Put64(std::array<uint8_t, 24>& bytes, size_t offset, uint64_t value) {
+template <size_t Size>
+void Put64(std::array<uint8_t, Size>& bytes, size_t offset, uint64_t value) {
     for (size_t index = 0; index < 8; ++index) bytes[offset + index] = static_cast<uint8_t>(value >> (index * 8));
 }
 
@@ -298,13 +306,19 @@ bool HashExecutableImage(const std::filesystem::path& path, const ExecutableImag
     if (!file) return Fail(error, "cannot read executable image for SHA-256 validation");
     Sha256 hash;
     if (!hash.Open(error)) return false;
+    std::array<uint8_t, 16> image_metadata{};
+    Put64(image_metadata, 0, image.entry);
+    Put64(image_metadata, 8, static_cast<uint64_t>(image.load_segments.size()));
+    if (!hash.Add(image_metadata.data(), image_metadata.size(), error)) return false;
     std::vector<uint8_t> buffer(1024 * 1024);
     for (const auto& segment : image.load_segments) {
-        std::array<uint8_t, 24> metadata{};
+        std::array<uint8_t, 40> metadata{};
         Put32(metadata, 0, ElfLoad);
         Put32(metadata, 4, segment.flags);
         Put64(metadata, 8, segment.rva);
         Put64(metadata, 16, segment.bytes);
+        Put64(metadata, 24, segment.memory_size);
+        Put64(metadata, 32, segment.alignment);
         if (!hash.Add(metadata.data(), metadata.size(), error)) return false;
         file.clear();
         file.seekg(static_cast<std::streamoff>(segment.file_offset));

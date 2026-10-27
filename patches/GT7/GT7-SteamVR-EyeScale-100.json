@@ -15,7 +15,7 @@
       ]
     }
   ],
-  "evidence": "GT7 reference file SHA256 9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf; executable-image SHA256 0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6; only init foveation enable byte changes, method retained; game files remain unchanged.",
+  "evidence": "GT7 reference file SHA256 9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf; executable-image SHA256 f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf; only init foveation enable byte changes, method retained; game files remain unchanged.",
   "native_eye_resolution": {
     "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf",
     "vrscale": "1.00",
@@ -30,5 +30,5 @@
   "strict_main_module": true,
   "main_module_source_base": 0,
   "eboot_sha256": "9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf",
-  "executable_image_sha256": "0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6"
+  "executable_image_sha256": "f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf"
 }
