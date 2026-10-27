@@ -11,6 +11,9 @@ class QSettings;
 class QResizeEvent;
 
 class Configuration;
+namespace LauncherDiagnostics {
+class Run;
+}
 class MainDialog: public QDialog {
 	Q_OBJECT
 
@@ -22,7 +25,8 @@ public:
 	explicit MainDialog(QWidget* parent = nullptr);
 	~MainDialog() override = default;
 
-	void RunInterpreter(QProcess* process, const Configuration& info);
+	void RunInterpreter(QProcess* process, const Configuration& info,
+	                    LauncherDiagnostics::Run* diagnostics);
 
 	static void WriteSettings(QSettings& s);
 	static void ReadSettings(QSettings& s);

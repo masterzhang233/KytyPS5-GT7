@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
@@ -48,14 +49,19 @@ protected:
 
 QString GetStatusText(Configuration::GameStatus status) {
 	switch (status) {
-		case Configuration::GameStatus::Unknown: return QStringLiteral("Unknown");
-		case Configuration::GameStatus::MainMenu: return QStringLiteral("Main menu");
-		case Configuration::GameStatus::InGame: return QStringLiteral("In game");
-		case Configuration::GameStatus::Logo: return QStringLiteral("Logo");
-		case Configuration::GameStatus::DoesntBoot: return QStringLiteral("Doesn't boot");
+		case Configuration::GameStatus::Unknown:
+			return QCoreApplication::translate("ConfigurationItem", "Unknown");
+		case Configuration::GameStatus::MainMenu:
+			return QCoreApplication::translate("ConfigurationItem", "Main menu");
+		case Configuration::GameStatus::InGame:
+			return QCoreApplication::translate("ConfigurationItem", "In game");
+		case Configuration::GameStatus::Logo:
+			return QCoreApplication::translate("ConfigurationItem", "Logo");
+		case Configuration::GameStatus::DoesntBoot:
+			return QCoreApplication::translate("ConfigurationItem", "Doesn't boot");
 	}
 
-	return QStringLiteral("Unknown");
+	return QCoreApplication::translate("ConfigurationItem", "Unknown");
 }
 
 QString GetStatusColor(Configuration::GameStatus status) {
@@ -87,21 +93,25 @@ QString GetDisplayText(const Configuration& info) {
 	QStringList lines({info.name});
 
 	if (!info.title_id.isEmpty()) {
-		lines.append(QStringLiteral("Serial ID: %1").arg(info.title_id));
+		lines.append(QCoreApplication::translate("ConfigurationItem", "Serial ID: %1")
+		                 .arg(info.title_id));
 	}
 	if (!info.gameVersion.isEmpty()) {
-		lines.append(QStringLiteral("Game version: %1").arg(info.gameVersion));
+		lines.append(QCoreApplication::translate("ConfigurationItem", "Game version: %1")
+		                 .arg(info.gameVersion));
 	}
 	if (!info.firmwareVer.isEmpty()) {
-		lines.append(QStringLiteral("Firmware version: %1").arg(info.firmwareVer));
+		lines.append(QCoreApplication::translate("ConfigurationItem", "Firmware version: %1")
+		                 .arg(info.firmwareVer));
 	}
 
 	const auto path = GetPathText(info);
 	if (!path.isEmpty()) {
-		lines.append(QStringLiteral("Path: %1").arg(path));
+		lines.append(QCoreApplication::translate("ConfigurationItem", "Path: %1").arg(path));
 	}
 	if (!info.game_comment.isEmpty()) {
-		lines.append(QStringLiteral("Comment: %1").arg(info.game_comment));
+		lines.append(QCoreApplication::translate("ConfigurationItem", "Comment: %1")
+		                 .arg(info.game_comment));
 	}
 
 	return lines.join(QLatin1Char('\n'));

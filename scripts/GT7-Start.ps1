@@ -52,6 +52,7 @@ try {
     $arguments = @('--game', $resolvedGame, '--screen-width', $dimensions[0],
         '--screen-height', $dimensions[1], '--present-mode', 'Mailbox', '--tessellation',
         '--bindless', '--redzone', '--shader-optimization-type', 'Performance',
+        '--console-language', '11',
         '--readback-linear-images', 'false', '--printf-direction', 'File',
         '--printf-output-file', '_kyty.txt')
     if ($Fullscreen) { $arguments += '--fullscreen' }

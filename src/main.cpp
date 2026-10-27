@@ -131,7 +131,7 @@ static void PrintUsage() {
 	::printf("  --vr                                 Enable the SteamVR headset bridge.\n");
 	::printf("  --amd-cpu                            Apply AMD CPU instruction patches.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
-	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
+	::printf("  --console-language <0-29>            Console language. Default: 11 (Simplified Chinese).\n");
 	::printf("  --vulkan-validation <true|false>     Enable Vulkan validation.\n");
 	::printf("  --gpu-assisted-validation <t|f>      Bounds-check shader accesses on the GPU.\n"
 	         "                                       Implies --vulkan-validation; very slow.\n");

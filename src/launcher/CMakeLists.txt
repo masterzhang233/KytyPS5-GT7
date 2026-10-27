@@ -1,5 +1,5 @@
 
-find_package(Qt6 COMPONENTS Concurrent Network Widgets REQUIRED)
+find_package(Qt6 COMPONENTS Concurrent LinguistTools Network Widgets REQUIRED)
 
 set(CMAKE_AUTOUIC_SEARCH_PATHS forms)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -35,7 +35,33 @@ endif()
 target_include_directories(launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set_target_properties(launcher PROPERTIES AUTOUIC ON AUTOMOC ON AUTORCC ON)
 
+set(launcher_translation_source
+	"${CMAKE_CURRENT_SOURCE_DIR}/translations/launcher_zh_CN.ts")
+set(launcher_translation_binary
+	"${CMAKE_CURRENT_BINARY_DIR}/launcher_zh_CN.qm")
+add_custom_command(
+	OUTPUT "${launcher_translation_binary}"
+	COMMAND Qt6::lrelease "${launcher_translation_source}"
+	        -qm "${launcher_translation_binary}"
+	DEPENDS "${launcher_translation_source}"
+	COMMENT "Compiling Simplified Chinese launcher translations"
+	VERBATIM)
+set_source_files_properties("${launcher_translation_binary}" PROPERTIES
+	GENERATED TRUE
+	QT_RESOURCE_ALIAS "launcher_zh_CN.qm")
+qt_add_resources(launcher launcher_translations
+	PREFIX "/i18n"
+	FILES "${launcher_translation_binary}")
+
 if(BUILD_TESTING)
+	find_package(Python3 COMPONENTS Interpreter QUIET)
+	if(Python3_Interpreter_FOUND)
+		add_test(NAME launcher_translation_catalog
+		         COMMAND Python3::Interpreter
+		                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/CheckTranslationCatalog.py"
+		                 "${CMAKE_CURRENT_SOURCE_DIR}/translations/launcher_zh_CN.ts")
+	endif()
+
 	add_executable(gt7_launcher_settings_tests EXCLUDE_FROM_ALL
 		"${CMAKE_CURRENT_SOURCE_DIR}/tests/Gt7SettingsTests.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/configuration.cpp"
@@ -45,6 +71,30 @@ if(BUILD_TESTING)
 	target_link_libraries(gt7_launcher_settings_tests PRIVATE Qt6::Widgets)
 	set_target_properties(gt7_launcher_settings_tests PROPERTIES AUTOMOC ON)
 	add_test(NAME gt7_launcher_settings COMMAND $<TARGET_FILE:gt7_launcher_settings_tests>)
+
+	add_executable(launcher_language_tests EXCLUDE_FROM_ALL
+		"${CMAKE_CURRENT_SOURCE_DIR}/tests/LauncherLanguageTests.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/launcherLanguage.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/include/launcherLanguage.h")
+	target_include_directories(launcher_language_tests PRIVATE
+		"${CMAKE_CURRENT_SOURCE_DIR}/include")
+	target_link_libraries(launcher_language_tests PRIVATE Qt6::Core)
+	qt_add_resources(launcher_language_tests launcher_language_test_translations
+		PREFIX "/i18n"
+		FILES "${launcher_translation_binary}")
+	add_test(NAME launcher_language COMMAND $<TARGET_FILE:launcher_language_tests>)
+
+	add_executable(launcher_diagnostics_tests EXCLUDE_FROM_ALL
+		"${CMAKE_CURRENT_SOURCE_DIR}/tests/LauncherDiagnosticsTests.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/launcherDiagnostics.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/include/launcherDiagnostics.h")
+	target_include_directories(launcher_diagnostics_tests PRIVATE
+		"${CMAKE_CURRENT_SOURCE_DIR}/include")
+	target_link_libraries(launcher_diagnostics_tests PRIVATE Qt6::Core kyty_git_version)
+	if(WIN32)
+		target_link_libraries(launcher_diagnostics_tests PRIVATE user32)
+	endif()
+	add_test(NAME launcher_diagnostics COMMAND $<TARGET_FILE:launcher_diagnostics_tests>)
 endif()
 
 if(WIN32 AND NOT KYTY_CLANG_CL)
@@ -75,7 +125,7 @@ if(WIN32)
 			--no-system-d3d-compiler
 			--no-system-dxc-compiler
 			--no-opengl-sw
-			--no-translations
+			--translations zh_CN
 		COMMENT "Deploying Qt runtime and TLS plugins"
 		VERBATIM
 	)
@@ -132,7 +182,7 @@ if(WIN32)
                 --no-system-d3d-compiler
                 --no-system-dxc-compiler
                 --no-opengl-sw
-                --no-translations
+                --translations zh_CN
             RESULT_VARIABLE kyty_windeployqt_result
         )
         if(NOT kyty_windeployqt_result EQUAL 0)

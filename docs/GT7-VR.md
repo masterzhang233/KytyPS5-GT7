@@ -34,6 +34,34 @@ allocation sizes are not all forced to the selected dimensions.
 GT7 profiles cannot be combined with a custom patch selected in the launcher's Patches dialog.
 Disable that custom patch first. Existing game settings and other titles keep their original defaults.
 
+## Chinese-first interface
+
+Preview 2 opens the launcher in Simplified Chinese on a fresh installation. English remains
+available from the global settings, and the selected launcher language is remembered after a
+restart. Existing installations that explicitly selected a launcher language keep that choice.
+
+New game configurations also default the emulated console language to Simplified Chinese. An
+existing configuration with an explicitly saved console language is not changed. You can select
+any supported console language in the game configuration dialog.
+
+## Per-run diagnostics
+
+Every GT7 launch attempt creates its own timestamped diagnostic directory under:
+
+```text
+%LOCALAPPDATA%\KytyPS5-GT7\logs
+```
+
+The launcher displays this location and provides **Open log folder**, **Copy latest log path**,
+and **Export diagnostics** actions. The exported ZIP includes an allow-listed run summary,
+compatibility-check output, emulator stdout/stderr and the emulator log. The summary records the
+exact build revision and emulator SHA-256, the selected render mode, exit status and basic hardware
+information so a report can be matched to the correct executable.
+
+Nothing is uploaded automatically. The diagnostic bundle excludes the game, save data, shader
+caches and launcher settings. Text emitted by the emulator can still contain local paths; review a
+bundle before sharing it. Raw PDB and map files are intentionally omitted from the public package.
+
 ## Quest 3 through Steam Link
 
 Start SteamVR, connect Quest 3 with Steam Link and keep the headset awake before launching VR.

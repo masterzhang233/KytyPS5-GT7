@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import pathlib
+import re
 import zipfile
 
 
@@ -38,12 +39,29 @@ def main() -> int:
         required = {"launcher.exe", "kyty_emulator.exe", "Qt6Core.dll", "msvcp140.dll",
                     "vcruntime140.dll", "libwinpthread-1.dll", "platforms/qwindows.dll",
                     "patches/GT7/patches.json", "licenses/qt/Qt-LGPL-3.0-only.txt",
-                    "scripts/GT7-Start.ps1", "docs/GT7-VR.md"}
+                    "scripts/GT7-Start.ps1", "docs/GT7-VR.md",
+                    "translations/qt_zh_CN.qm"}
         if not required.issubset(actual):
             raise ValueError("required runtime or notice files are missing")
-        if any(pathlib.PurePosixPath(name).name.lower() == "eboot.bin" for name in actual):
-            raise ValueError("game executable found in release")
-        print(f"PASS: {len(actual)} files, ZIP CRC and SHA-256; no game executable")
+        forbidden_suffixes = {".pdb", ".map", ".log", ".dmp"}
+        forbidden_parts = {"_savedata", "cache", "caches", "shader-cache", "shader_cache"}
+        for name in actual:
+            path = pathlib.PurePosixPath(name)
+            lowered = {part.lower() for part in path.parts}
+            if path.name.lower() == "eboot.bin" or lowered & forbidden_parts:
+                raise ValueError(f"game, save or cache content found in release: {name}")
+            if path.suffix.lower() in forbidden_suffixes:
+                raise ValueError(f"development symbol, dump or log found in release: {name}")
+
+        # Public metadata and docs must not disclose this builder's absolute workspace path.
+        text_extensions = {".md", ".txt", ".json", ".ps1", ".xml", ".ini"}
+        windows_absolute_path = re.compile(rb"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/]", re.I)
+        for name in actual:
+            path = pathlib.PurePosixPath(name)
+            if path.suffix.lower() in text_extensions:
+                if windows_absolute_path.search(release.read(root + name)):
+                    raise ValueError(f"local absolute path found in release text: {name}")
+        print(f"PASS: {len(actual)} files, ZIP CRC and SHA-256; no game/save/cache/log/symbol content")
     return 0
 
 

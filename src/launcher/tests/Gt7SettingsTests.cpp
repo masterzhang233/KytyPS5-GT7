@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	Configuration original;
 	original.title_id = "PPSA01317";
+	Check(original.console_language == 11, "new configurations default to Simplified Chinese");
 	Check(Gt7ProfileArguments(original).isEmpty(), "existing/native defaults do not add a patch");
 	original.gt7_desktop_height = 1440;
 	original.gt7_vr_scale = 120;
@@ -48,8 +49,16 @@ int main(int argc, char** argv) {
 	QSettings old_settings(temporary.filePath("old.ini"), QSettings::IniFormat);
 	Configuration old;
 	old.ReadSettings(&old_settings);
+	Check(old.console_language == 11, "missing language setting defaults to Simplified Chinese");
 	Check(old.gt7_desktop_height == 0 && !old.gt7_vr_enabled && old.gt7_vr_scale == 100,
 	      "older settings receive safe native/VR-off defaults");
+	QSettings explicit_settings(temporary.filePath("explicit-language.ini"), QSettings::IniFormat);
+	explicit_settings.setValue(QStringLiteral("console_language"), 1);
+	explicit_settings.sync();
+	Configuration explicit_language;
+	explicit_language.ReadSettings(&explicit_settings);
+	Check(explicit_language.console_language == 1,
+	      "existing explicit console language is preserved");
 	for (const auto height: {0, 1080, 1440, 2160}) {
 		Configuration parsed;
 		QString error;

@@ -6,16 +6,21 @@
 #include "controllerLightbar.h"
 #include "gameContent.h"
 #include "gt7Settings.h"
+#include "launcherDiagnostics.h"
 #include "patchesDialog.h"
 #include "updateChecker.h"
 
 #include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QDialog>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QIODevice>
 #include <QLabel>
 #include <QMessageBox>
@@ -27,12 +32,15 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QTextStream>
+#include <QUrl>
 #include <QVariant>
 #include <QtCore>
 
 #include <cstdint>
+#include <memory>
 
 #include "ui_main_dialog.h"
 
@@ -79,6 +87,9 @@ public:
 	void Update();
 	void FindInterpreter();
 	void Run();
+	void ExportDiagnostics(const QString& run_directory);
+	void ShowAbnormalExit(int exit_code, QProcess::ExitStatus exit_status,
+	                      const QString& run_directory);
 
 	[[nodiscard]] const QString& GetInterpreter() const { return m_interpreter; }
 
@@ -96,6 +107,11 @@ private:
 	QString         m_interpreter;
 
 	QProcess m_process;
+	std::unique_ptr<LauncherDiagnostics::Run> m_diagnostic_run;
+	QLabel*       m_logs_path_label    = nullptr;
+	QPushButton*  m_open_logs_button   = nullptr;
+	QPushButton*  m_copy_log_button    = nullptr;
+	QPushButton*  m_export_logs_button = nullptr;
 
 	QPointer<ConfigurationItem> m_running_item;
 };
@@ -110,6 +126,68 @@ MainDialog::MainDialog(QWidget* parent): QDialog(parent), m_p(new MainDialogPriv
 MainDialogPrivate::~MainDialogPrivate() {
 	m_process.disconnect(this);
 	delete m_ui;
+}
+
+void MainDialogPrivate::ExportDiagnostics(const QString& run_directory) {
+	if (run_directory.isEmpty()) {
+		QMessageBox::information(m_main_dialog, tr("Export diagnostics"),
+		                         tr("No GT7 run log is available yet."));
+		return;
+	}
+	auto output_dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+	if (output_dir.isEmpty()) {
+		output_dir = QFileInfo(LauncherDiagnostics::LogsRoot()).absolutePath();
+	}
+	const auto suggested = QDir(output_dir).absoluteFilePath(
+	    QStringLiteral("GT7-diagnostics-%1.zip").arg(QFileInfo(run_directory).fileName()));
+	auto output = QFileDialog::getSaveFileName(m_main_dialog, tr("Export diagnostics"), suggested,
+	                                           tr("ZIP archive (*.zip)"));
+	if (output.isEmpty()) {
+		return;
+	}
+	if (!output.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+		output += QStringLiteral(".zip");
+	}
+	QString error;
+	if (!LauncherDiagnostics::ExportRunBundle(run_directory, output, &error)) {
+		QMessageBox::critical(m_main_dialog, tr("Export diagnostics"), error);
+		return;
+	}
+	QApplication::clipboard()->setText(QDir::toNativeSeparators(output));
+	QMessageBox::information(
+	    m_main_dialog, tr("Diagnostics exported"),
+	    tr("The diagnostic package was saved and its path was copied to the clipboard:\n%1\n\n"
+	       "Nothing was uploaded. Known user, game and emulator paths were removed. Review the "
+	       "remaining text before sharing it.")
+	        .arg(QDir::toNativeSeparators(output)));
+}
+
+void MainDialogPrivate::ShowAbnormalExit(int exit_code, QProcess::ExitStatus exit_status,
+	                                      const QString& run_directory) {
+	if (exit_status == QProcess::NormalExit && exit_code == 0) {
+		return;
+	}
+	const auto hex_code =
+	    QString::number(static_cast<quint32>(exit_code), 16).rightJustified(8, QLatin1Char('0'));
+	QMessageBox dialog(
+	    QMessageBox::Critical, tr("GT7 ended unexpectedly"),
+	    tr("GT7 ended unexpectedly.\n\nExit code: %1 (0x%2)\nLog folder:\n%3\n\n"
+	       "Open this run's log folder or export a diagnostic ZIP for analysis.")
+	        .arg(exit_code)
+	        .arg(hex_code.toUpper(), QDir::toNativeSeparators(run_directory)),
+	    QMessageBox::Close, m_main_dialog);
+	auto* open_button = dialog.addButton(tr("Open log folder"), QMessageBox::ActionRole);
+	auto* export_button =
+	    dialog.addButton(tr("Export diagnostics..."), QMessageBox::ActionRole);
+	dialog.exec();
+	if (dialog.clickedButton() == open_button) {
+		if (!QDesktopServices::openUrl(QUrl::fromLocalFile(run_directory))) {
+			QMessageBox::warning(m_main_dialog, tr("Diagnostic logs"),
+			                     tr("Could not open the log folder:\n%1").arg(run_directory));
+		}
+	} else if (dialog.clickedButton() == export_button) {
+		ExportDiagnostics(run_directory);
+	}
 }
 
 void MainDialogPrivate::Setup(MainDialog* main_dialog) {
@@ -138,6 +216,47 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	        &ConfigurationListWidget::StartGt7Vr);
 	connect(m_ui->gt7_settings_button, &QPushButton::clicked, m_ui->widget,
 	        &ConfigurationListWidget::ConfigureGt7Rendering);
+	QDir().mkpath(LauncherDiagnostics::LogsRoot());
+	m_logs_path_label = new QLabel(
+	    tr("Diagnostic logs: %1").arg(QDir::toNativeSeparators(LauncherDiagnostics::LogsRoot())),
+	    main_dialog);
+	m_logs_path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	m_logs_path_label->setWordWrap(true);
+	m_ui->verticalLayout_4->insertWidget(0, m_logs_path_label);
+	auto* support_layout = new QHBoxLayout;
+	m_open_logs_button   = new QPushButton(tr("Open log folder"), main_dialog);
+	m_copy_log_button    = new QPushButton(tr("Copy latest log path"), main_dialog);
+	m_export_logs_button = new QPushButton(tr("Export diagnostics..."), main_dialog);
+	m_open_logs_button->setAutoDefault(false);
+	m_copy_log_button->setAutoDefault(false);
+	m_export_logs_button->setAutoDefault(false);
+	m_open_logs_button->setToolTip(tr("Open the folder containing one timestamped directory for each GT7 run."));
+	m_copy_log_button->setToolTip(tr("Copy the latest GT7 run log directory to the clipboard."));
+	m_export_logs_button->setToolTip(
+	    tr("Create a local ZIP with logs and a run summary. No file is uploaded automatically."));
+	support_layout->addWidget(m_open_logs_button);
+	support_layout->addWidget(m_copy_log_button);
+	support_layout->addWidget(m_export_logs_button);
+	support_layout->addStretch();
+	m_ui->verticalLayout_4->insertLayout(1, support_layout);
+	connect(m_open_logs_button, &QPushButton::clicked, this, [this]() {
+		const auto root = LauncherDiagnostics::LogsRoot();
+		QDir().mkpath(root);
+		if (!QDesktopServices::openUrl(QUrl::fromLocalFile(root))) {
+			QMessageBox::warning(m_main_dialog, tr("Diagnostic logs"),
+			                     tr("Could not open the log folder:\n%1").arg(root));
+		}
+	});
+	connect(m_copy_log_button, &QPushButton::clicked, this, []() {
+		const auto latest = LauncherDiagnostics::LatestRunDirectory();
+		if (latest.isEmpty()) {
+			return;
+		}
+		QApplication::clipboard()->setText(QDir::toNativeSeparators(latest));
+	});
+	connect(m_export_logs_button, &QPushButton::clicked, this, [this]() {
+		ExportDiagnostics(LauncherDiagnostics::LatestRunDirectory());
+	});
 	connect(m_ui->check_updates_link, &QLabel::linkActivated, this,
 	        [this](const QString&) { m_update_checker->Check(true); });
 	connect(m_update_checker, &UpdateChecker::CheckingChanged, m_ui->check_updates_link,
@@ -159,6 +278,28 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 			Update();
 		}
 	});
+	connect(&m_process, &QProcess::started, this, [this]() {
+		if (m_diagnostic_run != nullptr) {
+			m_diagnostic_run->RecordStarted(m_process.processId());
+		}
+	});
+	connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+		if (m_diagnostic_run != nullptr) {
+			m_diagnostic_run->RecordProcessError(static_cast<int>(error), m_process.errorString());
+		}
+	});
+	connect(&m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+	        [this](int exit_code, QProcess::ExitStatus exit_status) {
+		        QString run_directory;
+		        if (m_diagnostic_run != nullptr) {
+			        m_diagnostic_run->RecordFinished(exit_code,
+			                                         exit_status == QProcess::NormalExit);
+			        run_directory = m_diagnostic_run->Directory();
+		        }
+		        if (!run_directory.isEmpty()) {
+			        ShowAbnormalExit(exit_code, exit_status, run_directory);
+		        }
+	        });
 
 	m_ui->label_settings_file->setText(tr("Settings file: ") + m_ui->widget->GetSettingsFile());
 
@@ -221,7 +362,8 @@ static QString BoolArg(bool value) {
 	return value ? QStringLiteral("true") : QStringLiteral("false");
 }
 
-static QStringList CreateEmulatorArgs(const Configuration& info) {
+static QStringList CreateEmulatorArgs(const Configuration& info,
+                                      const QString& forced_printf_file = {}) {
 	QStringList args;
 	auto        r = EnumToText(info.screen_resolution).split('x');
 
@@ -274,8 +416,11 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--shader-log-folder" << info.shader_log_folder;
 	args << "--command-buffer-dump" << BoolArg(info.command_buffer_dump_enabled);
 	args << "--command-buffer-dump-folder" << info.command_buffer_dump_folder;
-	args << "--printf-direction" << EnumToText(info.printf_direction);
-	args << "--printf-output-file" << info.printf_output_file;
+	args << "--printf-direction"
+	     << (forced_printf_file.isEmpty() ? EnumToText(info.printf_direction)
+	                                      : QStringLiteral("File"));
+	args << "--printf-output-file"
+	     << (forced_printf_file.isEmpty() ? info.printf_output_file : forced_printf_file);
 	if (info.profiler_enabled) {
 		args << "--profile";
 	}
@@ -415,13 +560,20 @@ static QString BuildWinCmdKCommand(const QString& interpreter, const QStringList
 }
 #endif
 
-void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
+void MainDialog::RunInterpreter(QProcess* process, const Configuration& info,
+                                LauncherDiagnostics::Run* diagnostics) {
 	const auto& interpreter = m_p->GetInterpreter();
 
 	QFileInfo f(interpreter);
 	auto      dir = f.absoluteDir();
+	const bool gt7_title =
+	    info.title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
 	const bool gt7_profile = HasGt7Profile(info);
 	if (gt7_profile && QFileInfo::exists(PatchesDialog::PatchPlanPath(info.title_id))) {
+		if (diagnostics != nullptr) {
+			diagnostics->RecordRejected(QStringLiteral("patch_conflict"),
+			                            QStringLiteral("A custom game patch plan is enabled."));
+		}
 		QMessageBox::critical(
 		    this, tr("GT7 profile conflict"),
 		    tr("Disable the custom game patches before using GT7 internal rendering or SteamVR. "
@@ -429,8 +581,13 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 		return;
 	}
 
-	auto args = CreateEmulatorArgs(info);
+	auto args = CreateEmulatorArgs(
+	    info, diagnostics != nullptr ? diagnostics->EmulatorLogPath() : QString {});
 	if (args.isEmpty()) {
+		if (diagnostics != nullptr) {
+			diagnostics->RecordRejected(QStringLiteral("configuration"),
+			                            QStringLiteral("Invalid emulator configuration."));
+		}
 		QMessageBox::critical(this, tr("Error"), tr("Invalid emulator configuration"));
 		QApplication::quit();
 		return;
@@ -472,20 +629,36 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 		// a user cancellation and prevent the game from starting.
 		disconnect(&progress, nullptr, &loop, nullptr);
 		progress.close();
+		const auto check_stdout = check.readAllStandardOutput();
+		const auto check_stderr = check.readAllStandardError();
+		if (diagnostics != nullptr) {
+			diagnostics->RecordPreflight(
+			    check_stdout, check_stderr, check.exitCode(),
+			    check.exitStatus() == QProcess::NormalExit,
+			    check.error() == QProcess::UnknownError ? QString() : check.errorString(),
+			    interrupted);
+		}
 		if (interrupted) {
 			return;
 		}
 		if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0 ||
 		    check.error() == QProcess::FailedToStart) {
-			const auto detail = QString::fromUtf8(check.readAllStandardError()) +
-			                    QString::fromUtf8(check.readAllStandardOutput());
+			auto detail =
+			    QString::fromUtf8(check_stderr) + QString::fromUtf8(check_stdout);
+			if (detail.isEmpty()) {
+				detail = check.errorString();
+			}
+			if (diagnostics != nullptr) {
+				detail += tr("\n\nLog folder:\n%1")
+				              .arg(QDir::toNativeSeparators(diagnostics->Directory()));
+			}
 			QMessageBox::critical(this, tr("GT7 compatibility check failed"),
-			                      detail.isEmpty() ? check.errorString() : detail);
+			                      detail);
 			return;
 		}
 	}
 
-	if (gt7_profile) {
+	if (gt7_title) {
 		// QProcess quotes individual arguments. Do not pass user-selected game paths through
 		// cmd.exe, where percent expansion can change even a double-quoted path.
 		process->setProgram(interpreter);
@@ -534,10 +707,18 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 #endif
 	}
 	process->setWorkingDirectory(dir.path());
+	process->setStandardOutputFile(QString {});
+	process->setStandardErrorFile(QString {});
+	if (diagnostics != nullptr) {
+		diagnostics->ConfigureProcess(process);
+	}
 #if defined(_WIN32)
-	process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
-		args->flags |= static_cast<uint32_t>(CREATE_NEW_CONSOLE);
-		args->startupInfo->dwFlags &= ~static_cast<DWORD>(STARTF_USESTDHANDLES);
+	process->setCreateProcessArgumentsModifier([capture_logs = diagnostics != nullptr](
+	                                               QProcess::CreateProcessArguments* args) {
+		if (!capture_logs) {
+			args->flags |= static_cast<uint32_t>(CREATE_NEW_CONSOLE);
+			args->startupInfo->dwFlags &= ~static_cast<DWORD>(STARTF_USESTDHANDLES);
+		}
 		args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USECOUNTCHARS);
 		args->startupInfo->dwXCountChars = CMD_X_CHARS;
 		args->startupInfo->dwYCountChars = CMD_Y_CHARS;
@@ -548,15 +729,27 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	});
 #endif
 	process->start();
+	// Report immediate launch failures. A GT7 run has no separate console because its output is
+	// preserved in the timestamped diagnostic directory.
 #if !defined(_WIN32)
-	// Report immediate launch failures.
-	if (!process->waitForStarted(5000)) {
+	const bool report_start_failure = true;
+#else
+	const bool report_start_failure = diagnostics != nullptr;
+#endif
+	if (report_start_failure && !process->waitForStarted(5000)) {
+		if (diagnostics != nullptr) {
+			diagnostics->RecordRejected(QStringLiteral("start"), process->errorString());
+		}
+		auto detail = tr("Failed to start:\n%1\n\n%2")
+		                  .arg(process->program(), process->errorString());
+		if (diagnostics != nullptr) {
+			detail += tr("\n\nLog folder:\n%1")
+			              .arg(QDir::toNativeSeparators(diagnostics->Directory()));
+		}
 		QMessageBox::critical(
-		    this, tr("Error"),
-		    tr("Failed to start:\n%1\n\n%2").arg(process->program(), process->errorString()));
+		    this, tr("Error"), detail);
 		return;
 	}
-#endif
 	process->waitForFinished(100);
 }
 
@@ -606,7 +799,33 @@ void MainDialogPrivate::Run() {
 	m_lightbar.Stop();
 
 	auto info = m_ui->widget->CreateConfiguration(*m_running_item);
-	m_main_dialog->RunInterpreter(&m_process, *info);
+	const bool gt7_title =
+	    info->title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
+	if (gt7_title) {
+		LauncherDiagnostics::RunDetails details;
+		details.title_id          = info->title_id;
+		details.game_version      = info->gameVersion;
+		details.output_resolution = EnumToText(info->screen_resolution);
+		details.mode               = info->gt7_vr_enabled ? QStringLiteral("SteamVR")
+		                                                   : QStringLiteral("Desktop");
+		details.desktop_height = info->gt7_desktop_height;
+		details.vr_scale       = info->gt7_vr_scale;
+		details.gpu_index      = info->gpu_index;
+		details.emulator_path  = m_interpreter;
+		details.private_paths  = {info->basedir, QFileInfo(m_interpreter).absolutePath()};
+		QString diagnostic_error;
+		m_diagnostic_run = LauncherDiagnostics::Run::Create(details, &diagnostic_error);
+		if (m_diagnostic_run == nullptr) {
+			QMessageBox::warning(
+			    m_main_dialog, tr("Diagnostic logs"),
+			    tr("The game can still be started, but this run could not create its diagnostic "
+			       "folder:\n%1")
+			        .arg(diagnostic_error));
+		}
+	} else {
+		m_diagnostic_run.reset();
+	}
+	m_main_dialog->RunInterpreter(&m_process, *info, m_diagnostic_run.get());
 	if (m_process.state() == QProcess::NotRunning && m_running_item != nullptr) {
 		m_running_item->SetRunning(false);
 	}
@@ -630,6 +849,9 @@ void MainDialogPrivate::Update() {
 	    item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
 	m_ui->gt7_start_vr_button->setEnabled(run_enabled && gt7_selected);
 	m_ui->gt7_settings_button->setEnabled(run_enabled && gt7_selected);
+	const bool has_logs = !LauncherDiagnostics::LatestRunDirectory().isEmpty();
+	m_copy_log_button->setEnabled(has_logs);
+	m_export_logs_button->setEnabled(has_logs);
 	if (gt7_selected) {
 		const auto info = m_ui->widget->CreateConfiguration(*item);
 		const auto output = EnumToText(info->screen_resolution);

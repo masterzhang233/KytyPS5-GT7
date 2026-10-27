@@ -2,6 +2,7 @@
 
 #include "common/emulatorConfig.h"
 #include "configuration.h"
+#include "launcherLanguage.h"
 #include "mandatoryLineEdit.h"
 #include <SDL3/SDL.h>
 
@@ -32,6 +33,8 @@
 #include <QVBoxLayout>
 #include <QtAlgorithms>
 
+#include <iterator>
+
 #if QT_CONFIG(vulkan)
 #include <QVulkanInstance>
 #include <QVulkanWindow>
@@ -42,6 +45,8 @@
 constexpr char SETTINGS_CFG_DIALOG[]               = "ConfigurationEditDialog";
 constexpr char SETTINGS_CFG_LAST_GEOMETRY[]        = "geometry";
 constexpr int  GLOBAL_SETTINGS_GAME_DIRS_MIN_WIDTH = 400;
+
+static QString g_launcher_language = LauncherLanguage::Default();
 
 static void UpdateControllerColorButton(QPushButton* button, const QString& hex) {
 	const QColor color(hex);
@@ -59,37 +64,37 @@ static void UpdateControllerColorButton(QPushButton* button, const QString& hex)
 	                                                                   : QStringLiteral("black")));
 }
 
-const QStringList CONSOLE_LANGUAGE_NAMES = {
-    "Japanese",
-    "English (United States)",
-    "French (France)",
-    "Spanish (Spain)",
-    "German",
-    "Italian",
-    "Dutch",
-    "Portuguese (Portugal)",
-    "Russian",
-    "Korean",
-    "Chinese (Traditional)",
-    "Chinese (Simplified)",
-    "Finnish",
-    "Swedish",
-    "Danish",
-    "Norwegian",
-    "Polish",
-    "Portuguese (Brazil)",
-    "English (United Kingdom)",
-    "Turkish",
-    "Spanish (Latin America)",
-    "Arabic",
-    "French (Canada)",
-    "Czech",
-    "Hungarian",
-    "Greek",
-    "Romanian",
-    "Thai",
-    "Vietnamese",
-    "Indonesian",
+const char* const CONSOLE_LANGUAGE_NAMES[] = {
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Japanese"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "English (United States)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "French (France)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Spanish (Spain)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "German"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Italian"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Dutch"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Portuguese (Portugal)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Russian"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Korean"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Chinese (Traditional)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Chinese (Simplified)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Finnish"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Swedish"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Danish"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Norwegian"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Polish"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Portuguese (Brazil)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "English (United Kingdom)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Turkish"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Spanish (Latin America)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Arabic"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "French (Canada)"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Czech"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Hungarian"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Greek"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Romanian"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Thai"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Vietnamese"),
+    QT_TRANSLATE_NOOP("ConfigurationEditDialog", "Indonesian"),
 };
 
 static QString NormalizeGameDirectory(const QString& dir) {
@@ -128,6 +133,8 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 	InitGameDirectories();
 	m_ui->controller_group->setVisible(false);
 	m_ui->settings_button->setVisible(false);
+	m_ui->label_launcher_language->setVisible(false);
+	m_ui->comboBox_launcher_language->setVisible(false);
 	m_ui->gt7_group->setVisible(
 	    info.title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0);
 	connect(m_ui->checkBox_gt7_vr, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -159,17 +166,19 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 	connect(m_ui->slider_controller_volume, &QSlider::valueChanged, this, [this](int value) {
 		m_ui->label_controller_volume_value->setText(tr("%1%").arg(value));
 	});
-	connect(m_ui->comboBox_shader_log_direction, &QComboBox::currentTextChanged, this,
-	        [this](const QString& text) {
-		        auto log = TextToEnum<Configuration::LogDirection>(text);
+	connect(m_ui->comboBox_shader_log_direction, &QComboBox::currentIndexChanged, this,
+	        [this](int) {
+		        auto log = TextToEnum<Configuration::LogDirection>(
+		            m_ui->comboBox_shader_log_direction->currentData().toString());
 		        m_ui->lineEdit_shader_log_folder->setEnabled(
 		            log == Configuration::LogDirection::File);
 	        });
 	connect(m_ui->checkBox_cmd_dump, &QCheckBox::toggled, this,
 	        [this](bool flag) { m_ui->lineEdit_cmd_dump_folder->setEnabled(flag); });
-	connect(m_ui->comboBox_printf_direction, &QComboBox::currentTextChanged, this,
-	        [this](const QString& text) {
-		        auto log = TextToEnum<Configuration::LogDirection>(text);
+	connect(m_ui->comboBox_printf_direction, &QComboBox::currentIndexChanged, this,
+	        [this](int) {
+		        auto log = TextToEnum<Configuration::LogDirection>(
+		            m_ui->comboBox_printf_direction->currentData().toString());
 		        m_ui->lineEdit_printf_file->setEnabled(log == Configuration::LogDirection::File);
 	        });
 
@@ -205,6 +214,7 @@ void ConfigurationEditDialog::WriteSettings(QSettings& s) {
 	}
 
 	s.endGroup();
+	LauncherLanguage::Write(s, g_launcher_language);
 }
 
 void ConfigurationEditDialog::ReadSettings(QSettings& s) {
@@ -213,13 +223,58 @@ void ConfigurationEditDialog::ReadSettings(QSettings& s) {
 	g_last_geometry = s.value(SETTINGS_CFG_LAST_GEOMETRY, g_last_geometry).toByteArray();
 
 	s.endGroup();
+	g_launcher_language = LauncherLanguage::Read(s);
+}
+
+static QString EnumDisplayText(Configuration::Resolution value) {
+	return EnumToText(value);
+}
+
+static QString EnumDisplayText(Configuration::PresentMode value) {
+	switch (value) {
+		case Configuration::PresentMode::Fifo:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Fifo");
+		case Configuration::PresentMode::Mailbox:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Mailbox");
+		case Configuration::PresentMode::Immediate:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Immediate");
+	}
+	return EnumToText(value);
+}
+
+static QString EnumDisplayText(Configuration::ShaderOptimizationType value) {
+	switch (value) {
+		case Configuration::ShaderOptimizationType::None:
+			return QCoreApplication::translate("ConfigurationEditDialog", "None");
+		case Configuration::ShaderOptimizationType::Size:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Size");
+		case Configuration::ShaderOptimizationType::Performance:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Performance");
+	}
+	return EnumToText(value);
+}
+
+static QString EnumDisplayText(Configuration::LogDirection value) {
+	switch (value) {
+		case Configuration::LogDirection::Silent:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Silent");
+		case Configuration::LogDirection::Console:
+			return QCoreApplication::translate("ConfigurationEditDialog", "Console");
+		case Configuration::LogDirection::File:
+			return QCoreApplication::translate("ConfigurationEditDialog", "File");
+	}
+	return EnumToText(value);
 }
 
 template <class T>
 static void ListInit(QComboBox* combo, T value) {
 	combo->clear();
-	combo->addItems(EnumToList<T>());
-	combo->setCurrentText(EnumToText(value));
+	const auto meta_enum = QMetaEnum::fromType<T>();
+	for (int index = 0; index < meta_enum.keyCount(); ++index) {
+		const auto enum_value = static_cast<T>(meta_enum.value(index));
+		combo->addItem(EnumDisplayText(enum_value), EnumToText(enum_value));
+	}
+	combo->setCurrentIndex(combo->findData(EnumToText(value)));
 }
 
 void ConfigurationEditDialog::Init(const Configuration& info) {
@@ -316,9 +371,13 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->lineEdit_skip_shaders->setText(info.skip_shader_hashes);
 	m_ui->spinBox_vblank_frequency->setValue(info.vblank_frequency);
 	m_ui->comboBox_console_language->clear();
-	m_ui->comboBox_console_language->addItems(CONSOLE_LANGUAGE_NAMES);
+	for (const auto* language: CONSOLE_LANGUAGE_NAMES) {
+		m_ui->comboBox_console_language->addItem(
+		    QCoreApplication::translate("ConfigurationEditDialog", language));
+	}
 	m_ui->comboBox_console_language->setCurrentIndex(
-	    info.console_language >= 0 && info.console_language < CONSOLE_LANGUAGE_NAMES.size()
+	    info.console_language >= 0 &&
+	            info.console_language < static_cast<int>(std::size(CONSOLE_LANGUAGE_NAMES))
 	        ? info.console_language
 	        : Configuration::DEFAULT_CONSOLE_LANGUAGE);
 	m_ui->checkBox_shader_validation->setChecked(info.shader_validation_enabled);
@@ -393,6 +452,15 @@ void ConfigurationEditDialog::InitGameDirectories() {
 
 void ConfigurationEditDialog::SetGlobalSettings(const QStringList& dirs) {
 	m_global_settings = true;
+	m_ui->label_launcher_language->setVisible(true);
+	m_ui->comboBox_launcher_language->setVisible(true);
+	m_ui->comboBox_launcher_language->clear();
+	m_ui->comboBox_launcher_language->addItem(tr("简体中文"),
+	                                          QString::fromLatin1(LauncherLanguage::SimplifiedChinese));
+	m_ui->comboBox_launcher_language->addItem(tr("English"),
+	                                          QString::fromLatin1(LauncherLanguage::English));
+	m_ui->comboBox_launcher_language->setCurrentIndex(
+	    m_ui->comboBox_launcher_language->findData(g_launcher_language));
 	auto* menu        = new QMenu(m_ui->settings_button);
 	menu->addAction(tr("Import..."), this, &ConfigurationEditDialog::ImportGameSettings);
 	menu->addAction(tr("Export..."), this, &ConfigurationEditDialog::ExportGameSettings);
@@ -463,10 +531,10 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 		info.controller.vibration_intensity = ui.slider_controller_vibration->value();
 		info.controller.speaker_volume      = ui.slider_controller_volume->value();
 	}
-	info.screen_resolution =
-	    TextToEnum<Configuration::Resolution>(ui.comboBox_screen_resolution->currentText());
-	info.present_mode =
-	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
+	info.screen_resolution = TextToEnum<Configuration::Resolution>(
+	    ui.comboBox_screen_resolution->currentData().toString());
+	info.present_mode = TextToEnum<Configuration::PresentMode>(
+	    ui.comboBox_present_mode->currentData().toString());
 	info.gpu_index                 = ui.comboBox_gpu->currentIndex() - 1;
 	info.fullscreen_enabled        = ui.checkBox_fullscreen->isChecked();
 	info.hide_cursor_enabled       = ui.checkBox_hide_cursor->isChecked();
@@ -489,14 +557,14 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 	info.red_zone_protection_enabled = ui.checkBox_red_zone_protection->isChecked();
 #endif
 	info.shader_optimization_type = TextToEnum<Configuration::ShaderOptimizationType>(
-	    ui.comboBox_shader_optimization_type->currentText());
+	    ui.comboBox_shader_optimization_type->currentData().toString());
 	info.shader_log_direction = TextToEnum<Configuration::LogDirection>(
-	    ui.comboBox_shader_log_direction->currentText());
+	    ui.comboBox_shader_log_direction->currentData().toString());
 	info.shader_log_folder           = ui.lineEdit_shader_log_folder->text();
 	info.command_buffer_dump_enabled = ui.checkBox_cmd_dump->isChecked();
 	info.command_buffer_dump_folder  = ui.lineEdit_cmd_dump_folder->text();
 	info.printf_direction =
-	    TextToEnum<Configuration::LogDirection>(ui.comboBox_printf_direction->currentText());
+	    TextToEnum<Configuration::LogDirection>(ui.comboBox_printf_direction->currentData().toString());
 	info.printf_output_file = ui.lineEdit_printf_file->text();
 	info.profiler_enabled = ui.checkBox_profiler->isChecked();
 }
@@ -521,6 +589,10 @@ void ConfigurationEditDialog::save() {
 	}
 
 	UpdateInfo(m_info, *m_ui, m_global_settings);
+	if (m_global_settings) {
+		g_launcher_language = LauncherLanguage::Normalize(
+		    m_ui->comboBox_launcher_language->currentData().toString());
+	}
 
 	emit accept();
 }
@@ -532,6 +604,8 @@ void ConfigurationEditDialog::clear() {
 	if (m_global_settings) {
 		emit PreviewControllerColor({});
 		m_game_dirs_list->clear();
+		m_ui->comboBox_launcher_language->setCurrentIndex(
+		    m_ui->comboBox_launcher_language->findData(LauncherLanguage::Default()));
 		update_game_directory_buttons();
 	}
 }

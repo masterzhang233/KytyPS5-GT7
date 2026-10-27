@@ -1,6 +1,7 @@
 #include "inputMappingDialog.h"
 
 #include <QAbstractItemView>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
@@ -28,34 +29,38 @@ struct PadControl {
 };
 
 constexpr PadControl PAD_CONTROLS[] = {
-    {"Up", "D-pad Up", "Up"},
-    {"Down", "D-pad Down", "Down"},
-    {"Left", "D-pad Left", "Left"},
-    {"Right", "D-pad Right", "Right"},
-    {"LeftStickUp", "Left stick Up", "W"},
-    {"LeftStickDown", "Left stick Down", "S"},
-    {"LeftStickLeft", "Left stick Left", "A"},
-    {"LeftStickRight", "Left stick Right", "D"},
-    {"RightStickUp", "Right stick Up", "T"},
-    {"RightStickDown", "Right stick Down", "G"},
-    {"RightStickLeft", "Right stick Left", "F"},
-    {"RightStickRight", "Right stick Right", "H"},
-    {"Triangle", "Triangle", "I"},
-    {"Circle", "Circle", "L"},
-    {"Cross", "Cross", "J"},
-    {"Square", "Square", "K"},
+    {"Up", QT_TRANSLATE_NOOP("InputMappingDialog", "D-pad Up"), "Up"},
+    {"Down", QT_TRANSLATE_NOOP("InputMappingDialog", "D-pad Down"), "Down"},
+    {"Left", QT_TRANSLATE_NOOP("InputMappingDialog", "D-pad Left"), "Left"},
+    {"Right", QT_TRANSLATE_NOOP("InputMappingDialog", "D-pad Right"), "Right"},
+    {"LeftStickUp", QT_TRANSLATE_NOOP("InputMappingDialog", "Left stick Up"), "W"},
+    {"LeftStickDown", QT_TRANSLATE_NOOP("InputMappingDialog", "Left stick Down"), "S"},
+    {"LeftStickLeft", QT_TRANSLATE_NOOP("InputMappingDialog", "Left stick Left"), "A"},
+    {"LeftStickRight", QT_TRANSLATE_NOOP("InputMappingDialog", "Left stick Right"), "D"},
+    {"RightStickUp", QT_TRANSLATE_NOOP("InputMappingDialog", "Right stick Up"), "T"},
+    {"RightStickDown", QT_TRANSLATE_NOOP("InputMappingDialog", "Right stick Down"), "G"},
+    {"RightStickLeft", QT_TRANSLATE_NOOP("InputMappingDialog", "Right stick Left"), "F"},
+    {"RightStickRight", QT_TRANSLATE_NOOP("InputMappingDialog", "Right stick Right"), "H"},
+    {"Triangle", QT_TRANSLATE_NOOP("InputMappingDialog", "Triangle"), "I"},
+    {"Circle", QT_TRANSLATE_NOOP("InputMappingDialog", "Circle"), "L"},
+    {"Cross", QT_TRANSLATE_NOOP("InputMappingDialog", "Cross"), "J"},
+    {"Square", QT_TRANSLATE_NOOP("InputMappingDialog", "Square"), "K"},
     {"L1", "L1", "Q"},
     {"R1", "R1", "E"},
     {"L2", "L2", "Z"},
     {"R2", "R2", "C"},
     {"L3", "L3", "Left Shift"},
     {"R3", "R3", "Left Ctrl"},
-    {"Options", "Options", "Return"},
-    {"TouchPad", "Touch pad left (SELECT)", "Backspace"},
-    {"TouchPadRight", "Touch pad right (START)", "Tab"},
-    {"SpeakerVolume", "Speaker volume (cycle)", "1"},
-    {"VibrationIntensity", "Vibration intensity (cycle)", "2"},
-    {"TriggerEffectIntensity", "Trigger effect intensity (cycle)", "3"},
+    {"Options", QT_TRANSLATE_NOOP("InputMappingDialog", "Options"), "Return"},
+    {"TouchPad", QT_TRANSLATE_NOOP("InputMappingDialog", "Touch pad left (SELECT)"),
+     "Backspace"},
+    {"TouchPadRight", QT_TRANSLATE_NOOP("InputMappingDialog", "Touch pad right (START)"),
+     "Tab"},
+    {"SpeakerVolume", QT_TRANSLATE_NOOP("InputMappingDialog", "Speaker volume (cycle)"), "1"},
+    {"VibrationIntensity", QT_TRANSLATE_NOOP("InputMappingDialog", "Vibration intensity (cycle)"),
+     "2"},
+    {"TriggerEffectIntensity",
+     QT_TRANSLATE_NOOP("InputMappingDialog", "Trigger effect intensity (cycle)"), "3"},
 };
 
 QString KeypadName(int key) {
@@ -253,7 +258,7 @@ InputMappingDialog::InputMappingDialog(const QStringList& mapping, QWidget* pare
 
 	for (const auto& control: PAD_CONTROLS) {
 		auto* item = new QTreeWidgetItem(m_bindings);
-		item->setText(0, tr(control.label));
+		item->setText(0, QCoreApplication::translate("InputMappingDialog", control.label));
 		item->setData(0, Qt::UserRole, QString::fromLatin1(control.id));
 		SetBinding(item, m_custom_bindings ? parsed.value(QString::fromLatin1(control.id))
 		                                   : QString::fromLatin1(control.default_binding));
