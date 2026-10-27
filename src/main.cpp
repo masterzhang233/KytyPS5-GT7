@@ -688,7 +688,7 @@ static bool PrepareGt7Profile(const Loader::Gt7Profile::Request& request,
 		::printf("GT7 profile: %s\n", error.c_str());
 		return false;
 	}
-	::printf("GT7 profile: verified eboot SHA-256 and original bytes; %s; disk game unchanged\n",
+	::printf("GT7 profile: verified executable image and original patch bytes; %s; disk game unchanged\n",
 	         options.game_patch.filename().string().c_str());
 	::printf("GT7 profile: internal height=%d VR scale=%d; output=%ux%u (independent window size)\n",
 	         request.desktop_height, request.vr_scale, options.config.screen_width, options.config.screen_height);

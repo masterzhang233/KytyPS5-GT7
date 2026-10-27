@@ -4,14 +4,20 @@ This experimental Windows build adds GT7 internal scene scaling and native stere
 SteamVR. Supply your own unpacked game. The release contains no game executable, game resources,
 save data, captured shaders, or generated caches.
 
-The profiles support **PPSA01317, version 01.710.000**, with this exact `eboot.bin` SHA-256:
+The profiles support **PPSA01317, version 01.710.000**. Compatibility is checked from the
+normalized executable image rather than the outer `eboot.bin` container. A PS5 SELF and an
+extracted ELF are both accepted when their `PT_LOAD` program segments match this audited image:
 
 ```text
-9bef586d199c088b1e558333ba897507235dae2e148a9c6e3de93eedbb5f88bf
+0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6
 ```
 
-An unsupported executable, changed instruction bytes, missing patch or conflicting custom
-patch is rejected. Patches apply only to the loaded process; the file on disk is not rewritten.
+This removes dependence on SELF packaging metadata while retaining code identity and original-byte
+checks at every patch point. An unsupported executable image, changed instruction bytes, missing
+patch or conflicting custom patch is rejected. A rejection reports both the normalized image hash
+and the whole-file hash for diagnosis. Patches apply only to the loaded process; the file on disk is
+not rewritten.
+
 An unpacked game folder or its `eboot.bin` is required. These profiles do not support `.zar` archives.
 
 ## Launcher
@@ -113,9 +119,9 @@ mutually exclusive, and cannot be combined with `--game-patch`.
 
 ## Validation limits
 
-The patch inputs were checked against the executable fingerprint, original instruction bytes and
-existing float literals. Previous offline native-code fixtures exercised the sizing arithmetic and
-descriptor construction; their GPU allocation/layout calls used recording doubles. They are not
+The patch inputs were checked against the normalized executable-image fingerprint, original
+instruction bytes and existing float literals. Previous offline native-code fixtures exercised the
+sizing arithmetic and descriptor construction; their GPU allocation/layout calls used recording doubles. They are not
 proof of every live render target, frame rate, image quality or compatibility with another update.
 This upstream integration requires its own runtime validation. No performance improvement is
 claimed merely from selecting a profile.

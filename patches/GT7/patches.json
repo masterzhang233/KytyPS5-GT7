@@ -7,35 +7,36 @@
   "patches": [
     {
       "file": "GT7-Desktop-Internal-Native.json",
-      "sha256": "68ec5a39891c0559fc02f4e4b000c9dccf71a31d46f626e42abbc57be482ff2d"
+      "sha256": "fd16824171d6aee7d06e36644b0b65458567aade3cb451d0bf6c1caa0adfdbc0"
     },
     {
       "file": "GT7-Desktop-Internal-1080.json",
-      "sha256": "0574c270e1f32b15c9a8b3904fc77da11823c0d32cda2682b69f6bf62cc5faf3"
+      "sha256": "cd8afe59cf9748b89de5e99a22bd698b01854cfa59c07b9125d2a5fd9a942e32"
     },
     {
       "file": "GT7-Desktop-Internal-1440.json",
-      "sha256": "6fa372b85c46d26ab82ed10379746c0ecda60b25924220870fe9f895351bedde"
+      "sha256": "d01a0931a86ce410f110190a08bdbe8ddc3a697116febe154a23fc2f42d810ab"
     },
     {
       "file": "GT7-Desktop-Internal-2160.json",
-      "sha256": "3a80a7b4465da0d70f319dd1e7e6d4127d40ccc248672d2365f539ee9221c0f8"
+      "sha256": "f953be106964fe08d225d543739e16b27d664be99dc6ce48be2d00893a7f71c2"
     },
     {
       "file": "GT7-SteamVR-EyeScale-100.json",
-      "sha256": "bbd6157f1db3b2070c686ecf61382ed692169e0c5e42ed9675d124b64bb72977"
+      "sha256": "369badac709a1c0e5b962ebeea80d59eb37e70cca5df3303c4b03165571d0af6"
     },
     {
       "file": "GT7-SteamVR-EyeScale-110.json",
-      "sha256": "e0bff28303b74d71333ce56c36fcf2da147d79c2799771bdb658dd4f878ce2f6"
+      "sha256": "4f55dd0b66054fb5c7b2567a37a1a27dd3c116b32486453288bff4c083d79b02"
     },
     {
       "file": "GT7-SteamVR-EyeScale-120.json",
-      "sha256": "4d2de2bbed7cbad9eb0f8f8ea01cdc888c001918b6c477067693e80fe061375a"
+      "sha256": "85637fc20531f01fb259b0de51a86dd556afada486865c4058354b94e300b128"
     },
     {
       "file": "GT7-SteamVR-EyeScale-125.json",
-      "sha256": "802612cf1f9ea2dad7f98c05ddfb9a983a9c7a33791e314ec6d09bd9be820223"
+      "sha256": "c8059c711373c6b3955226b22f7ed48d23dc47248634b7fe922248f874cd97ab"
     }
-  ]
+  ],
+  "executable_image_sha256": "0cf94d196a1d3e04bd80c9fb8bfe3ee5becf69aadfa558d416c796c4335babd6"
 }
