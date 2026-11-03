@@ -26,3 +26,12 @@ target_compile_options(kyty_dlss_backend_smoke PRIVATE /W4 /utf-8 /EHsc)
 target_include_directories(kyty_dlss_backend_smoke SYSTEM PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/Vulkan-Headers/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/nlohmann_json/single_include")
+
+add_executable(kyty_dlss_device_probe device_probe.cpp)
+target_compile_features(kyty_dlss_device_probe PRIVATE cxx_std_20)
+set_property(TARGET kyty_dlss_device_probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+target_compile_definitions(kyty_dlss_device_probe PRIVATE VK_NO_PROTOTYPES NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(kyty_dlss_device_probe PRIVATE /W4 /utf-8 /EHsc)
+target_include_directories(kyty_dlss_device_probe SYSTEM PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/Vulkan-Headers/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/nlohmann_json/single_include")

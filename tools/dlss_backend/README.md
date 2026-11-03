@@ -86,6 +86,45 @@ nearest-even reference. Reports include ULP histograms; CPU/GPU raw images are
 saved. The one-ULP threshold applies to these fixtures, not every possible HDR
 input. This mode does not evaluate NGX or run the game's effect fragment shaders.
 
+## Device creation diagnostic
+
+`kyty_dlss_device_probe` isolates Vulkan device creation without starting a game,
+creating an NGX feature, or submitting GPU work:
+
+```powershell
+C:/work/dlss-backend-build/kyty_dlss_device_probe.exe `
+  C:/work/dlss-backend-build/kyty_dlss_backend.dll `
+  C:/external/DLSS/lib/Windows_x86_64/rel `
+  C:/work/device-config.json C:/work/device-report.json
+```
+
+Example configuration:
+
+```json
+{
+  "api_minor": 3,
+  "reservations": "guest",
+  "emulator_extensions": true,
+  "emulator_features": true,
+  "emulator_identity": true
+}
+```
+
+`api_minor` accepts 2 or 3. Reservations are `none`, `guest`, or
+`early_cuda_guest`; the last option reports `cuInit`'s result separately.
+`guest` reserves the emulator's low and extended address intervals with its
+16 MiB minimum-free-region rule, using ordinary reservations rather than mapped
+guest data/placeholders. Real backend instance/device extension queries run after
+these reservations. `emulator_extensions` adds the supported extension-name
+snapshot from the renderer. `emulator_features` reproduces the captured RTX 3080
+feature requests and two-queue configuration, requires API 1.3 and emulator
+extensions, and is a device-specific diagnostic rather than a portable feature
+selector. `omit_extension` can remove one extension for a controlled comparison.
+`emulator_identity` uses the renderer's Vulkan application/engine names and
+versions. Reports retain loaded NGX/CUDA/Vulkan/RTSS module paths at each stage
+and the actual `vkCreateDevice` result. The probe creates no SDL window or Win32
+surface and does not reproduce all injected-module or guest-memory-map behavior.
+
 ## Host call order
 
 1. Load the DLL; obtain `KytyDlssGetApi` with `GetProcAddress`. Initialize

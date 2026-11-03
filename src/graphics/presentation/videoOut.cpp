@@ -29,6 +29,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_init.h>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -267,7 +269,10 @@ public:
 	    : m_renderer(presenter.Renderer()), m_presenter(presenter), m_flip_queue(presenter) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 		Init(width, height);
-		m_present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+		m_present_thread = std::jthread([this](std::stop_token token) {
+			PresentThread(token);
+			m_present_thread_exited.store(true, std::memory_order_release);
+		});
 	}
 	~Impl();
 	KYTY_CLASS_NO_COPY(Impl);
@@ -293,6 +298,7 @@ private:
 	Graphics::RenderContext& m_renderer;
 	Graphics::Presenter&     m_presenter;
 	FlipQueue                m_flip_queue;
+	std::atomic<bool>        m_present_thread_exited {false};
 	std::jthread             m_present_thread;
 };
 
@@ -644,6 +650,18 @@ void VideoOutShutdown() {
 VideoOutDriver::Impl::~Impl() {
 	if (m_present_thread.joinable()) {
 		m_present_thread.request_stop();
+		// Present's title update waits for SDL_RunOnMainThread(..., true). The main
+		// event loop may never have run (graphics check), or may already have ended.
+		// Keep servicing its callbacks while the presenter finishes, with the window
+		// and all graphics resources still alive. Do not detach or skip normal cleanup.
+		if (SDL_IsMainThread()) {
+			while (!m_present_thread_exited.load(std::memory_order_acquire)) {
+				SDL_PumpEvents();
+				if (!m_present_thread_exited.load(std::memory_order_acquire)) {
+					Common::Thread::SleepMicro(1000);
+				}
+			}
+		}
 		m_present_thread.join();
 	}
 	for (int handle = 1; handle < VIDEO_OUT_NUM_MAX; handle++) {

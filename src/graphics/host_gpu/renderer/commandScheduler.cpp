@@ -203,7 +203,13 @@ void CommandScheduler::Shutdown() {
 	m_master.Wait(CurrentTick() - 1);
 	PopPendingOperations();
 	DrainPriorityOperations();
-	m_priority_thread.request_stop();
+	{
+		// This worker uses std::condition_variable, not its stop-token-aware variant.
+		// Change the predicate under the waiter's mutex so the notification cannot land
+		// between its false predicate check and entering wait during an early shutdown.
+		std::lock_guard lock(m_operation_mutex);
+		m_priority_thread.request_stop();
+	}
 	m_operation_available.notify_all();
 	if (m_priority_thread.joinable()) {
 		m_priority_thread.join();

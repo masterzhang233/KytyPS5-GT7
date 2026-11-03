@@ -7,13 +7,17 @@ param(
     [Parameter(Mandatory=$true)][string]$SourceUserDataRoot,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
     [switch]$Baseline,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$GraphicsCheckOnly
 )
 # Local developer playtest. No capture hotkey or raw texture dumping is required.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'GT7-LaunchSupport.ps1')
 try {
+    if ($CheckOnly -and $GraphicsCheckOnly) {
+        throw '-CheckOnly and -GraphicsCheckOnly are mutually exclusive.'
+    }
     $exe = (Resolve-Path -LiteralPath $EmulatorPath).ProviderPath
     $backend = (Resolve-Path -LiteralPath $BackendPath).ProviderPath
     $runtime = (Resolve-Path -LiteralPath $RuntimeDirectory).ProviderPath
@@ -35,9 +39,14 @@ try {
         Write-Output 'Playtest preflight passed. No game process or playtest directory created.'
         exit 0
     }
+    # Keep the compatibility preflight free of the graphics flag: --gt7-check-only
+    # returns before device initialization, so combining both would hide the check.
+    if ($GraphicsCheckOnly) { $arguments += '--graphics-check-only' }
     $run = Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
     [void][IO.Directory]::CreateDirectory($run)
-    foreach ($relative in @('_SaveData\PPSA01317', '_Trophies\PPSA01317', '_ShaderCache')) {
+    $stateDirectories = @()
+    if (-not $GraphicsCheckOnly) { $stateDirectories = @('_SaveData\PPSA01317', '_Trophies\PPSA01317', '_ShaderCache') }
+    foreach ($relative in $stateDirectories) {
         $from = Join-Path $source $relative
         if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
         $items = @(Get-Item -LiteralPath $source) + @(Get-Item -LiteralPath (Split-Path -Parent $from)) +
@@ -56,13 +65,19 @@ try {
     }
     $manifest = [ordered]@{
         schema = 1; kind = 'gt7_dlss_experimental_playtest'; status = 'prepared'; exit_code = $null
+        mode = $(if ($GraphicsCheckOnly) { 'graphics_check_only' } else { 'playtest' })
+        graphics_check_only = [bool]$GraphicsCheckOnly
         started_utc = [DateTime]::UtcNow.ToString('o'); baseline = [bool]$Baseline
         emulator = $exe; backend = $backend; runtime_directory = $runtime
         emulator_sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         backend_sha256 = (Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash.ToLowerInvariant()
         runtime_sha256 = (Get-FileHash -LiteralPath (Join-Path $runtime 'nvngx_dlss.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
         source_user_data = $source; working_directory = $run; arguments = $arguments; environment = $settings
-        note = 'Conditional 1920x1080 to 3840x2160 desktop SR; window is 2560x1440. Check runtime GT7 DLSS log counters to confirm use. Mirror fallback is spatial; exposure/temporal quality/FPS not certified.'
+        note = $(if ($GraphicsCheckOnly) {
+            'Initializes the real emulator window and Vulkan device, then exits before guest ELF loading or execution. No game state copied. This does not validate DLSS evaluation or rendering.'
+        } else {
+            'Conditional 1920x1080 to 3840x2160 desktop SR; window is 2560x1440. Check runtime GT7 DLSS log counters to confirm use. Mirror fallback is spatial; exposure/temporal quality/FPS not certified.'
+        })
     }
     $manifestPath = Join-Path $run 'playtest-manifest.json'
     $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
@@ -77,8 +92,12 @@ try {
         $stdout = [IO.File]::Open((Join-Path $run 'stdout.log'), [IO.FileMode]::CreateNew)
         $stderr = [IO.File]::Open((Join-Path $run 'stderr.log'), [IO.FileMode]::CreateNew)
         Write-Host "Playtest folder: $run"
-        Write-Host 'Enter the same race/cockpit view and drive normally. No F9 capture is needed. Close normally when finished.'
-        Write-Host 'This is a local experimental build. Unsupported pass combinations retain the original image.'
+        if ($GraphicsCheckOnly) {
+            Write-Host 'Checking real window and Vulkan device initialization. The emulator will exit before loading or running the game.'
+        } else {
+            Write-Host 'Enter the same race/cockpit view and drive normally. No F9 capture is needed. Close normally when finished.'
+            Write-Host 'This is a local experimental build. Unsupported pass combinations retain the original image.'
+        }
         if (-not $process.Start()) { throw 'Could not start the emulator.' }
         $manifest['status'] = 'running'; $manifest['pid'] = $process.Id
         $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8

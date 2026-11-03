@@ -18,7 +18,7 @@ public:
 	template <typename Lifecycle>
 	void Initialize() {
 		Lifecycle::initialize();
-		m_active.push_back({ShutdownCallback<Lifecycle>(), EmergencyCallback<Lifecycle>()});
+		m_active.push_back({ShutdownCallback<Lifecycle>(), EmergencyCallback<Lifecycle>(), Lifecycle::name});
 		if (m_print) {
 			std::printf("Initialized: %s\n", Lifecycle::name);
 		}
@@ -51,6 +51,7 @@ private:
 	struct Entry {
 		Callback shutdown;
 		Callback emergency_shutdown;
+		const char* name;
 	};
 
 	std::vector<Entry> m_active;

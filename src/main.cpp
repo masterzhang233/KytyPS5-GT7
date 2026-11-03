@@ -112,6 +112,7 @@ static void PrintUsage() {
 	::printf("  --gt7-desktop-height <value>         Internal GT7 3D height: native, 1080, 1440, 2160.\n");
 	::printf("  --gt7-vr-scale <value>               GT7 eye render scale: 100, 110, 120, 125; requires --vr.\n");
 	::printf("  --gt7-check-only                     Validate the selected GT7 profile without starting the game.\n");
+	::printf("  --graphics-check-only               Initialize the real Vulkan graphics path, then exit without loading guest code.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf(
@@ -287,6 +288,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 		if (arg == "--gt7-check-only") {
 			gt7.check_only = true;
+			continue;
+		}
+		if (arg == "--graphics-check-only") {
+			options.graphics_check_only = true;
 			continue;
 		}
 
@@ -591,6 +596,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 	}
 
+	if (gt7.check_only && options.graphics_check_only) {
+		::printf("--gt7-check-only and --graphics-check-only are mutually exclusive\n");
+		return false;
+	}
 	if (options.config.gpu_assisted_validation_enabled) {
 		options.config.vulkan_validation_enabled = true;
 	}
@@ -613,15 +622,21 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 // So CUDA is initialized here, before any reservation, with the free ranges below a floor held
 // for the duration of cuInit and released right after it: CUDA's range lands above the floor, and
 // the guest address space later reserves everything around it. The floor sits above the whole
-// guest range (HOST_USER_MAX + 1 = 1008 GiB): whatever CUDA reserved below it would be a hole in
+// ordinary low guest range (HOST_USER_MAX + 1 = 1008 GiB): whatever CUDA reserved below it would be a hole in
 // guest memory that a fixed-address mapping could hit.
-// KYTY_CUDA_EARLY_INIT=1 turns it on (off by default: it adds a DLL, CUDA threads and startup
-// time, and only drivers with Smooth Motion gain anything). KYTY_CUDA_VA_FLOOR_GB: the floor in
+// On affected NVIDIA drivers the opt-in DLSS path also needs this early initialization
+// attempt before its additional Vulkan extensions can create a device. Preloading only
+// nvcuda.dll is insufficient. The CUDA result alone does not predict Vulkan/NGX readiness;
+// do not disable DLSS on a nonzero result, and still validate its Vulkan/NGX calls.
+// KYTY_CUDA_EARLY_INIT=1 also enables this independently (otherwise off by default: it adds
+// a DLL, CUDA threads and startup time). KYTY_CUDA_VA_FLOOR_GB: the floor in
 // GiB, 1024 (the default) to 65536. Without nvcuda.dll (no NVIDIA driver) nothing happens.
 // From Jetsku/KytyPS5 (Luiz Henrique, PR 58, and Jetsku's opt-in, ec9943e6).
 static void InitCudaEarly() {
-	if (const char* value = std::getenv("KYTY_CUDA_EARLY_INIT");
-	    value == nullptr || std::strcmp(value, "1") != 0) {
+	const auto* dlss_value = std::getenv("KYTY_GT7_DLSS");
+	const bool dlss_requested = dlss_value && std::strcmp(dlss_value, "1") == 0;
+	const auto* early_value = std::getenv("KYTY_CUDA_EARLY_INIT");
+	if (!dlss_requested && (!early_value || std::strcmp(early_value, "1") != 0)) {
 		return;
 	}
 	HMODULE cuda = LoadLibraryExW(L"nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -629,6 +644,9 @@ static void InitCudaEarly() {
 		::printf("CUDA: nvcuda.dll not found (KYTY_CUDA_EARLY_INIT): no NVIDIA driver\n");
 		_putenv_s("KYTY_CUDA_EARLY_RESULT", "nvcuda.dll not found");
 		return;
+	}
+	if (dlss_requested) {
+		::printf("GT7 DLSS: preparing NVIDIA driver before guest address reservation\n");
 	}
 	using CuInit    = int(__stdcall*)(unsigned int);
 	const auto init = reinterpret_cast<CuInit>(GetProcAddress(cuda, "cuInit"));
@@ -673,7 +691,7 @@ static void InitCudaEarly() {
 		VirtualFree(ptr, 0, MEM_RELEASE);
 	}
 	const auto text =
-	    fmt::format("initialized before the guest address space, above {} GiB "
+	    fmt::format("initialization attempted before the guest address space, above {} GiB "
 	                "(cuInit {}{})",
 	                floor_gb, result, result == 0 ? "" : ", NVIDIA Smooth Motion will not start");
 	::printf("CUDA: %s\n", text.c_str());

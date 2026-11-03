@@ -1,5 +1,8 @@
 #include "common/subsystems.h"
 
+#include <cstdlib>
+#include <cstring>
+
 namespace Common {
 
 static Subsystems* g_active_subsystems = nullptr;
@@ -17,9 +20,19 @@ Subsystems::~Subsystems() {
 }
 
 void Subsystems::Destroy() {
+	const auto* setting = std::getenv("KYTY_SHUTDOWN_TRACE");
+	const bool trace = setting != nullptr && std::strcmp(setting, "1") == 0;
 	for (auto it = m_active.rbegin(); it != m_active.rend(); ++it) {
 		if (it->shutdown != nullptr) {
+			if (trace) {
+				std::fprintf(stderr, "Shutdown trace: begin subsystem %s\n", it->name);
+				std::fflush(stderr);
+			}
 			it->shutdown();
+			if (trace) {
+				std::fprintf(stderr, "Shutdown trace: end subsystem %s\n", it->name);
+				std::fflush(stderr);
+			}
 		}
 	}
 	m_active.clear();

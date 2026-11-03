@@ -29,6 +29,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -69,9 +71,21 @@ void Initialize() {
 
 void Shutdown() {
 	EXIT_IF(g_renderer == nullptr);
+	const auto* setting = std::getenv("KYTY_SHUTDOWN_TRACE");
+	const bool tracing = setting != nullptr && std::strcmp(setting, "1") == 0;
+	const auto trace = [tracing](const char* phase) {
+		if (tracing) {
+			std::fprintf(stderr, "Shutdown trace: graphics %s\n", phase);
+			std::fflush(stderr);
+		}
+	};
+	trace("begin GPU");
 	g_renderer->ShutdownGpu();
+	trace("end GPU; begin VideoOut");
 	VideoOut::VideoOutShutdown();
+	trace("end VideoOut; begin Window");
 	WindowShutdown();
+	trace("end Window");
 	g_renderer = nullptr;
 }
 

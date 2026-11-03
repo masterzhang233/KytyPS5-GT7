@@ -195,6 +195,12 @@ void Run(const RunOptions& options) {
 	const auto         param_json = options.app0_dir / "sce_sys" / "param.json";
 	Common::Subsystems subsystems(true);
 	Init(options.config, param_json, subsystems);
+	if (options.graphics_check_only) {
+		LOGF("Graphics check: real window and Vulkan graphics initialization succeeded; no guest ELF loaded or executed. Shutting down initialized subsystems in reverse order.\n");
+		// No guest threads or atexit RuntimeLinker callback exist on this path.
+		// Subsystems owns the exact normal initialization stack and unwinds it here.
+		return;
+	}
 
 	ClearDebugTextureFolder();
 

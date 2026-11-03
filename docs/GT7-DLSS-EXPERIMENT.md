@@ -66,7 +66,11 @@ its README. `scripts/GT7-Test-DLSS.ps1` takes explicit game, emulator, backend,
 runtime, prior save/cache and output paths. It runs the existing compatibility
 preflight, creates a private save/cache copy and sets environment variables only
 on its child process. `-CheckOnly` runs preflight without starting a game or
-creating a session. `-Baseline` uses the original 1080p path. Both use a 2560 by
+creating a session. It does not initialize graphics. `-GraphicsCheckOnly` instead
+runs preflight followed by the real window/Vulkan initialization and shutdown,
+without loading guest code or copying user saves. Its separate session manifest
+and exit code distinguish it from a compatibility-only check; these two check
+switches are mutually exclusive. `-Baseline` uses the original 1080p path. Both use a 2560 by
 1440 desktop window while the final scene/UI render surface remains 4K.
 
 No F9 capture is necessary for a normal playtest. Keep the session manifest and
@@ -75,6 +79,37 @@ launches do not enable this path. The opt-in variables are `KYTY_GT7_DLSS=1`,
 `KYTY_GT7_DLSS_BACKEND=<absolute DLL>` and
 `KYTY_GT7_DLSS_RUNTIME=<absolute directory containing nvngx_dlss.dll>`.
 VR is excluded from this experiment.
+
+## NVIDIA device-creation startup fix
+
+The first local playtest crashed at `vkCreateDevice`, before any DLSS evaluation,
+on the tested RTX 3080 / 596.49 setup. Disabling the RTSS Vulkan layer changed the
+access violation into `VK_ERROR_INITIALIZATION_FAILED`; it did not fix startup.
+Independent device probes with the same extensions and features passed, showing
+that those probes alone did not cover the emulator's initialization environment.
+
+Opting into DLSS now also runs the existing early CUDA initialization attempt
+before the emulator reserves guest virtual addresses. The temporary address
+reservation floor remains at least 1024 GiB, above the ordinary low guest range
+(`HOST_USER_MAX`; the emulator also has extended mappings). Loading only
+`nvcuda.dll` did not solve the reproduced failure; the complete early call was
+needed. The tested call returned CUDA status 2 while Vulkan initialization still
+succeeded, so that CUDA result is logged and is not used to silently disable
+DLSS. Vulkan device creation and NGX remain independently checked. Ordinary
+launches retain their previous behavior unless DLSS or `KYTY_CUDA_EARLY_INIT=1`
+is explicitly enabled. No RTSS settings or global environment are changed.
+
+This is a tested startup workaround; the NVIDIA driver's internal failure
+mechanism has not been established. A successful graphics-only check does not
+prove that a race has evaluated/composited DLSS frames or establish performance.
+
+The new immediate initialization/shutdown check also exposed a presenter shutdown
+deadlock: a synchronous SDL title callback waited for the main thread while that
+thread joined the presenter. Shutdown now pumps the main-thread SDL callbacks
+until the presenter exits, before joining and destroying the window. A separate
+priority-worker condition-variable stop notification is also protected by its
+wait mutex to avoid a lost wakeup. `KYTY_SHUTDOWN_TRACE=1` writes opt-in subsystem
+and graphics cleanup boundaries to stderr for diagnosing early exits.
 
 Input conversion and NGX must run outside rendering, through the scheduler's
 raw-command handoff. This drains queued recording and invalidates cached Vulkan
