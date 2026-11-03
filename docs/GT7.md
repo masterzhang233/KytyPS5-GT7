@@ -52,6 +52,71 @@ races in it are untested. It needs **Bindless textures** on in the launcher.
 
 ## Notes
 
+### DLSS Super Resolution development captures
+
+The `feature/gt7-dlss-sr` development work does **not** enable DLSS in the game yet.
+Before adding a temporal upscaler, the game's pre-resolve colour, depth, motion-vector
+encoding, jitter and history resets must be identified. A two-channel texture is only a
+candidate motion buffer, and the presented surface can already contain TAA and the HUD.
+
+On Windows, `scripts/GT7-Capture-TemporalInputs.ps1` runs the checked desktop profile in a
+new capture directory. It can copy `_SaveData/PPSA01317` from `-SourceUserDataRoot`; the
+original save is not used for writes. `-CheckOnly` runs the compatibility check without
+starting the game or creating the capture directory.
+If the launcher uses a different local user, pass the same `-UserId` (default `1000`)
+so the copied save is opened for that user.
+An optional `-ReuseShaderCache` copies `_ShaderCache` from the source user directory
+into the new run to reuse compiled shaders, while keeping the source untouched.
+
+```powershell
+.\scripts\GT7-Capture-TemporalInputs.ps1 -GamePath 'D:\Games\PPSA01317' `
+    -EmulatorPath '.\kyty_emulator.exe' -SourceUserDataRoot 'D:\GT7-user-data'
+```
+
+Enter a race, allow shader compilation to settle, and press **F9** once. Keep driving or
+turning for a few seconds, then close the game normally. Four consecutive frame graphs,
+shader dumps, selected image previews and raw readbacks are collected. This can pause the
+game briefly and is not a performance benchmark. Keep `_kyty.txt`, `stdout.log`, `stderr.log`, `capture-manifest.json`,
+`shader-dumps` and `image-dumps` together. No game executable or game asset needs to be sent
+with the capture.
+
+`KYTY_DUMP_IMAGES_RAW=1` adds binary image readbacks and JSON layout information to the
+existing image dump. The process-wide raw budget defaults to 512 MiB and is configurable
+with `KYTY_DUMP_IMAGES_RAW_MB`. Raw values preserve sign and floating-point bits; unlike
+the PNG previews, they are not normalised or gamma-adjusted. They still describe only the
+recorded mip, sampled rows and available layers. Read the layout before interpreting a
+file as a complete image. Unsupported formats, incomplete captures and exhausted budgets
+must not be treated as valid DLSS inputs.
+
+After identifying a pass, use `-ShaderHashes` to restrict image capture to its shaders,
+`-ImageMaxSide 4096 -ImageReadbackMB 128` for full single-layer 4K readbacks, and an
+appropriate `-RawBudgetMB` for the selected frames. These are limits, not guarantees:
+check each JSON's mip, row step and tile count. Image snapshots are **before** the
+bound operation, including write bindings. A later consumer or next-frame history read
+is required to observe its result. `-ShaderMemoryHashes` also records up to 4 KB of
+selected shaders' constants, including scalar descriptors beyond the usual 1 KB dump.
+
+`-DiscoverTemporalCandidates` supplements the hash filter with a narrow diagnostic
+signature: a pixel shader with four read-only, single-layer, mip-0 textures in the
+depth/R32F, RG16F motion, R11G11B10 scene, and RGBA16F history or R16F consumer pattern.
+It also records the candidate's constants. This can retain evidence when a lower
+scene scale selects a different shader permutation. It is not a verified temporal
+matcher and never changes rendering. Keep the complete frame graph and check the
+image budget; the discovery signature can still miss an unknown layout. Twelve
+images per capture with four 4K frames may need a 2048 MiB raw budget.
+
+The offline analyser uses only Python's standard library:
+
+```powershell
+python .\scripts\Analyze-GT7-TemporalInputs.py --log 'D:\capture\_kyty.txt' `
+    --output 'D:\capture\temporal-inputs.json'
+```
+
+Its producer/consumer graph and pass rankings are evidence for investigation, not automatic
+assignments of depth or motion-vector semantics. `dlss_ready` remains false. The optional
+standalone `tools/dlss_probe` checks NVIDIA's Vulkan runtime separately; even a successful
+probe does not establish GT7 integration or game image quality.
+
 No environment variables are needed to play. The `KYTY_*` variables mentioned in the commit
 history are for diagnostic runs only.
 

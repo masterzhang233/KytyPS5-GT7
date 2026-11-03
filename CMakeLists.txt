@@ -1025,6 +1025,33 @@ if(WIN32)
 	endif()
 endif()
 
+if(BUILD_TESTING)
+	add_executable(raw_image_dump_tests EXCLUDE_FROM_ALL
+		"${KYTY_TESTS_DIR}/RawImageDumpTests.cpp"
+		"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/image/rawImageDump.cpp")
+	target_include_directories(raw_image_dump_tests PRIVATE "${KYTY_SOURCE_DIR}")
+	target_link_libraries(raw_image_dump_tests PRIVATE nlohmann_json::nlohmann_json)
+	add_test(NAME raw_image_dump COMMAND $<TARGET_FILE:raw_image_dump_tests>)
+	add_dependencies(kyty_tests raw_image_dump_tests)
+	find_package(Python3 COMPONENTS Interpreter QUIET)
+	if(Python3_Interpreter_FOUND)
+		add_test(NAME gt7_temporal_inputs
+			COMMAND "${Python3_EXECUTABLE}" "${KYTY_TESTS_DIR}/gt7_temporal_inputs_test.py")
+	endif()
+	if(WIN32)
+		find_program(KYTY_POWERSHELL_EXECUTABLE powershell)
+		if(KYTY_POWERSHELL_EXECUTABLE)
+			add_test(NAME gt7_temporal_capture
+				COMMAND "${KYTY_POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+				-File "${KYTY_TESTS_DIR}/GT7-TemporalCapture.Tests.ps1"
+				-OutputDirectory "${PROJECT_BINARY_DIR}/test-output/temporal-capture")
+			# CTest may inherit PowerShell 7's module path; this test explicitly uses 5.1.
+			set_tests_properties(gt7_temporal_capture PROPERTIES
+				ENVIRONMENT "PSModulePath=$ENV{WINDIR}/System32/WindowsPowerShell/v1.0/Modules")
+		endif()
+	endif()
+endif()
+
 set(KYTY_TROPHY_UNLOCK_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/sounds/trophy-unlock.wav")
 add_custom_target(kyty_trophy_sound
 	COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:kyty_emulator>/assets/sounds"
@@ -1104,7 +1131,10 @@ if(WIN32)
 		VERBATIM)
 	install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/patches/GT7" DESTINATION patches)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Start.ps1"
-		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-LaunchSupport.ps1" DESTINATION scripts)
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-LaunchSupport.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Capture-TemporalInputs.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/Analyze-GT7-TemporalInputs.py" DESTINATION scripts)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-VR.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Kyty-MIT.txt" DESTINATION licenses)

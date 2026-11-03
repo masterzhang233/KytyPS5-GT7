@@ -54,8 +54,9 @@ struct HashedRange {
 };
 std::map<std::pair<uint64_t, uint64_t>, HashedRange> g_hashed;
 constexpr size_t                                     MaxHashed = 65536;
-// The addresses LogBytes logged in this capture: once each, and again when their bytes changed.
-std::set<uint64_t> g_bytes_logged;
+// Bytes already logged at each address; larger requests append the unseen tail. A changed
+// BytesHash erases the entry so the next request logs the current contents again.
+std::map<uint64_t, uint64_t> g_bytes_logged;
 // Round 91: captures left to begin right after this one (KYTY_FG_FRAMES).
 uint32_t g_frames_left = 0;
 // Verification: the ranges claimed in this capture and the bytes they download; the counts of
@@ -604,16 +605,22 @@ bool DumpsShaderMemory(uint64_t shader_hash) {
 }
 
 void LogBytes(const char* label, uint64_t address, uint64_t size) {
-	if (!Logging() || address == 0 || size == 0 || !g_bytes_logged.insert(address).second) {
+	if (!Logging() || address == 0 || size == 0) {
 		return;
 	}
 	size = std::min<uint64_t>(LibKernel::Memory::TryClampRangeSize(address, size), 4096u) &
 	       ~uint64_t {3};
+	const auto found = g_bytes_logged.find(address);
+	const uint64_t logged = found == g_bytes_logged.end() ? 0 : found->second;
+	if (size <= logged) {
+		return;
+	}
 	std::vector<uint32_t> words(size / 4u);
 	if (words.empty() || !LibKernel::Memory::TryReadBacking(address, words.data(), size)) {
 		return;
 	}
-	for (size_t row = 0; row < words.size(); row += 16) {
+	g_bytes_logged[address] = size;
+	for (size_t row = logged / 4u; row < words.size(); row += 16) {
 		std::string line;
 		for (size_t k = row; k < std::min(words.size(), row + 16); k++) {
 			line += fmt::format(" {:08x}", words[k]);

@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/bisect.h"
 #include "graphics/host_gpu/renderer/commandRecorder.h"
+#include "graphics/host_gpu/renderer/frameGraph.h"
 #include "graphics/host_gpu/renderer/gpuTiming.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -1242,13 +1243,27 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	}
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
-	auto&             image = m_impl->ResolveSurface(info);
+	auto& image = m_impl->ResolveSurface(info);
+	constexpr uint32_t presented_layer = 0; // Match the existing desktop CopyFrom layer.
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
+	// This runs on the GPU thread while preparing the flip, before the private presentation
+	// copy. It anchors a captured pass graph to the actual displayed surface. The surface may
+	// already contain the game's UI and temporal resolve; it is not a DLSS input declaration.
+	if (FrameGraph::Logging()) {
+		FrameGraph::BeginOp();
+		FrameGraph::Log("present source 0x%012" PRIx64 "+0x%" PRIx64
+		                " %ux%u fmt %d resolved 0x%012" PRIx64 "+0x%" PRIx64
+		                " %ux%u fmt %d layer %u",
+		                info.data.address, info.data.size, info.extent.width, info.extent.height,
+		                static_cast<int>(info.pixel_format), image.info.data.address,
+		                image.info.data.size, image.backing.extent.width, image.backing.extent.height,
+		                static_cast<int>(image.backing.format), presented_layer);
+	}
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
-	frame->CopyFrom(buffer, image);
+	frame->CopyFrom(buffer, image, presented_layer);
 	return *frame;
 }
 

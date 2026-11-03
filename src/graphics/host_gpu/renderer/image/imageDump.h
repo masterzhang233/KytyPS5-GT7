@@ -2,6 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_IMAGE_IMAGEDUMP_H_
 
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/renderer/image/rawImageDump.h"
 
 #include <cstdint>
 #include <string>
@@ -64,9 +65,13 @@ struct Layout {
 	uint32_t   texel_bytes = 0;
 	bool       depth       = false;
 	bool       cubes       = false;
+	Raw::Layout raw;
 };
 
-// Any thread: decodes `bytes` and writes image-dumps/<name>.png on a thread of its own.
+// Any thread: KYTY_DUMP_IMAGES_RAW=1 synchronously writes the original valid texel bytes and
+// layout JSON first (process budget KYTY_DUMP_IMAGES_RAW_MB, default 512, max 4096 MB).
+// The JSON describes selected mip/rows/tiles, not necessarily the entire texture.
+// Then decodes `bytes` and writes image-dumps/<name>.png on a thread of its own.
 void Write(std::string name, std::string description, const Layout& layout,
            std::vector<uint8_t> bytes);
 

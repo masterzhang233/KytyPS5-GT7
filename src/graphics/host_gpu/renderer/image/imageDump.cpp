@@ -8,6 +8,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -634,6 +635,37 @@ uint32_t TexelBytes(vk::Format format, bool& depth) {
 
 void Write(std::string name, std::string description, const Layout& layout,
            std::vector<uint8_t> bytes) {
+	static const bool raw_enabled = [] {
+		const char* value = std::getenv("KYTY_DUMP_IMAGES_RAW");
+		return value != nullptr && std::string_view(value) == "1";
+	}();
+	if (raw_enabled) {
+		static Raw::Writer writer([] {
+			uint64_t mb = 512;
+			if (const char* value = std::getenv("KYTY_DUMP_IMAGES_RAW_MB")) {
+				const std::string_view text(value);
+				uint64_t parsed = 0;
+				const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+				if (result.ec == std::errc() && result.ptr == text.data() + text.size()) {
+					mb = std::min<uint64_t>(parsed, 4096);
+				}
+			}
+			return mb << 20u;
+		}());
+		bool expected_depth = false;
+		const auto expected_bytes = TexelBytes(layout.format, expected_depth);
+		const auto result = expected_bytes != 0 && layout.raw.texel_bytes == expected_bytes &&
+		                            layout.raw.vk_format == static_cast<uint32_t>(layout.format) &&
+		                            layout.raw.depth == expected_depth
+		                        ? writer.Write("image-dumps", name, description, layout.raw, bytes)
+		                        : Raw::Result{false, 0, "raw metadata does not match decoded Vulkan format/aspect"};
+		if (result.written) {
+			LOGF("FG raw %s.json: complete, %" PRIu64 " packed texel bytes; selected mip/rows/tiles only\n",
+			     name.c_str(), result.payload_bytes);
+		} else {
+			LOGF("FG raw %s: NOT WRITTEN: %s\n", name.c_str(), result.error.c_str());
+		}
+	}
 	// One decode at a time: each holds its texels as floats and its sheet.
 	static std::mutex encoding;
 	std::thread([name = std::move(name), description = std::move(description), layout,

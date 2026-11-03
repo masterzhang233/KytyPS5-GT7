@@ -2570,6 +2570,40 @@ static const char* FrameGraphStage(ShaderType stage) {
 	}
 }
 
+// Diagnostic discovery only: a lower scene scale can select another shader permutation.
+// This narrow binding signature supplements the known hashes during F9 capture. It must
+// never authorize a rendering replacement or imply that a pass is a verified temporal resolve.
+static bool TemporalCaptureCandidate(const ShaderStageRuntime& runtime,
+                                     const PreparedBindings& prepared) {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_DUMP_IMAGES_TEMPORAL_CANDIDATES");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	const auto& program = *runtime.program;
+	if (!enabled || program.stage != ShaderType::Pixel || prepared.images.size() != 4 ||
+	    program.info.images.size() != 4) {
+		return false;
+	}
+	for (size_t i = 0; i < 4; ++i) {
+		const auto& binding = prepared.images[i];
+		const auto& info = binding.desc.info;
+		const auto& view = binding.desc.view_info;
+		if (!binding.image_id || program.info.images[i].written ||
+		    binding.desc.type != TextureCache::BindingType::Texture ||
+		    info.extent.width < 640 || info.extent.height < 360 || info.extent.depth != 1 ||
+		    info.resources.layers != 1 || view.base_layer != 0 || view.layer_count != 1 ||
+		    view.base_level != 0 || view.level_count != 1) {
+			return false;
+		}
+	}
+	using F = vk::Format;
+	const auto format = [&](size_t i) { return prepared.images[i].desc.info.pixel_format; };
+	return (format(0) == F::eR32Sfloat || format(0) == F::eD32Sfloat ||
+	        format(0) == F::eD32SfloatS8Uint) &&
+	       format(1) == F::eR16G16Sfloat && format(2) == F::eB10G11R11UfloatPack32 &&
+	       (format(3) == F::eR16G16B16A16Sfloat || format(3) == F::eR16Sfloat);
+}
+
 // Diagnostics (the frame graph): a stage's textures (with their cache states), buffers and user
 // data; the buffers and the user-data pointers are noted for the end-of-frame contents.
 static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime& runtime,
@@ -2579,6 +2613,12 @@ static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime&
 	const char* stage    = FrameGraphStage(program.stage);
 	auto&       textures = context.GetTextureCache();
 	auto&       buffers  = context.GetBufferCache();
+	const bool temporal_candidate = TemporalCaptureCandidate(runtime, prepared);
+	const bool dump_memory = temporal_candidate || FrameGraph::DumpsShaderMemory(program.shader_hash);
+	if (temporal_candidate) {
+		FrameGraph::Log("  temporal image candidate %016" PRIx64
+		                ": binding signature only, not a verified resolve", program.shader_hash);
+	}
 	// Round 90: whether it reads memory through addresses (what the walk for such shaders keeps up
 	// to date, RenderContext::PrepareBda, and the buffer lines below do not show).
 	FrameGraph::Log(
@@ -2645,7 +2685,7 @@ static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime&
 			return false;
 		};
 		if (binding.image_id && ImageDump::Enabled() &&
-		    ImageDump::WantedShader(program.shader_hash) &&
+		    (temporal_candidate || ImageDump::WantedShader(program.shader_hash)) &&
 		    ImageDump::Wanted(info.data.address, info.extent.width, info.extent.height,
 		                      info.resources.layers, info.IsDepth()) &&
 		    !(ImageDump::AllMips() && stage_writes(binding.image_id))) {
@@ -2696,7 +2736,7 @@ static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime&
 		}
 		if (mapped != 0) {
 			FrameGraph::NoteBuffer(r.Base48(), mapped);
-			if (FrameGraph::DumpsShaderMemory(program.shader_hash)) {
+			if (dump_memory) {
 				// Round 105: all of it, as it is after the frame (a crowd pass's instance list),
 				// and for a dispatch, the GPU's copy as the dispatch finds it (a transient list a
 				// later frame reuses is gone by the end of this one).
@@ -2748,13 +2788,21 @@ static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime&
 		const uint64_t address = user[reg] | (static_cast<uint64_t>(user[reg + 1]) << 32u);
 		if ((user[reg] & 3u) == 0 && user[reg + 1] != 0 && user[reg + 1] <= 0xffu &&
 		    Libs::LibKernel::Memory::TryClampRangeSize(address, 4) != 0) {
+			const bool selected = dump_memory;
+			const auto bytes = Libs::LibKernel::Memory::TryClampRangeSize(
+			    address, selected ? std::min<uint64_t>(FrameGraph::ChosenBufferBytes(), 4096u)
+			                      : FrameGraph::KeepBytes);
+			const bool gpu = buffers.HasGpuDirtyBytes(address, bytes);
 			FrameGraph::Log("  %s user pointer s[%zu:%zu] 0x%012" PRIx64 "%s", stage,
 			                program.user_data_base + reg, program.user_data_base + reg + 1, address,
-			                buffers.HasGpuDirtyBytes(address, FrameGraph::KeepBytes) ? " [G]" : "");
+			                gpu ? " [G]" : "");
 			FrameGraph::NoteBuffer(address, FrameGraph::KeepBytes);
-			if (FrameGraph::DumpsShaderMemory(program.shader_hash)) {
-				FrameGraph::LogBytes(fmt::format("{} memory 0x{:012x}", stage, address).c_str(),
-				                     address, 0x400u);
+			if (selected) {
+				FrameGraph::NoteChosenBuffer(address, bytes);
+				if (!gpu) {
+					FrameGraph::LogBytes(fmt::format("{} memory 0x{:012x}", stage, address).c_str(),
+					                     address, bytes);
+				}
 			}
 		}
 	}
@@ -2775,6 +2823,16 @@ static void LogFrameGraphStage(RenderContext& context, const ShaderStageRuntime&
 		                stage, program.user_data_base + reg, program.user_data_base + reg + 3,
 		                r.Base48(), size, r.Stride(), r.NumRecords());
 		FrameGraph::NoteBuffer(r.Base48(), size);
+		if (dump_memory) {
+			const auto bytes = std::min<uint64_t>({size, FrameGraph::ChosenBufferBytes(), 4096u});
+			FrameGraph::NoteChosenBuffer(r.Base48(), bytes);
+			// Scalar descriptors can address camera constants beyond the ordinary 1 KB
+			// frame-end dump. Keep CPU-authored bytes at the selected draw, not only later.
+			if (!buffers.HasGpuDirtyBytes(r.Base48(), bytes)) {
+				FrameGraph::LogBytes(fmt::format("{} user V# bytes 0x{:012x}", stage, r.Base48()).c_str(),
+				                     r.Base48(), bytes);
+			}
+		}
 	}
 }
 
