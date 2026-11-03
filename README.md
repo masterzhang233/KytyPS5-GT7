@@ -27,10 +27,13 @@ can change significantly between builds.
 > See [GT7 VR and render settings](docs/GT7-VR.md) for the supported game version,
 > Quest 3/Steam Link setup, profile choices, and validation limits.
 
-**Preview 2.2 (2026-11-03):** adds support for an audited GT7 1.71 executable variant
-that previously failed the executable-image SHA-256 check. See the
-[Chinese update notes](docs/releases/Preview-2.2.zh-CN.md) and
-[Windows download](https://github.com/masterzhang233/KytyPS5-GT7/releases/tag/KytyPS5-GT7-VR-2026-11-03-preview2.2).
+**Preview 2.3 (2026-11-03):** updates the upstream base to
+[`KytyPS5-2026-10-28-f908636`](https://github.com/usa-ratt/KytyPS5-GT7/releases/tag/KytyPS5-2026-10-28-f908636),
+with racing wheel support and graphics/memory changes, while retaining the Chinese launcher,
+SteamVR/render profiles, diagnostics, and both audited GT7 1.71 executable images from Preview 2.2.
+Upgrading from the October 26 base recompiles shaders once. See the
+[Chinese update notes](docs/releases/Preview-2.3.zh-CN.md) and
+[Windows download](https://github.com/masterzhang233/KytyPS5-GT7/releases/tag/KytyPS5-GT7-VR-2026-11-03-preview2.3).
 
 > [!IMPORTANT]
 > KytyPS5 is not affiliated with Sony Interactive Entertainment or PlayStation. The project does

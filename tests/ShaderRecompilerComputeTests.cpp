@@ -4887,6 +4887,15 @@ public:
     EnsureRuntimeContext();
     RenderContext context(m_runtime_context);
     auto &scheduler = context.GetCommandScheduler();
+    const auto *async_gc_value = std::getenv("KYTY_GC_ASYNC_DOWNLOAD");
+    const bool async_gc = async_gc_value == nullptr || async_gc_value[0] != '0';
+    const auto CompleteGc = [&] {
+      // The fallback waits inside GC already; do not add an empty submission
+      // to its existing synchronization budget.
+      if (async_gc) {
+        scheduler.Finish();
+      }
+    };
     HW::Context registers{};
     HW::UserConfig user_config{};
     HW::Shader shaders{};
@@ -5356,6 +5365,9 @@ public:
           cache, 0, std::numeric_limits<uint64_t>::max());
       const auto gc_submission_tick = scheduler.CurrentTick();
       cache.RunGarbageCollector();
+      // GC queues downloads and retirement now. Complete their GPU tick and the
+      // priority publication callbacks before checking the retired owners.
+      CompleteGc();
       uint32_t first_before_completion = 0;
       uint32_t second_before_completion = 0;
       Libs::LibKernel::Memory::TryReadBacking(base + first_offset,
@@ -5381,6 +5393,42 @@ public:
                                           sizeof(second_value)) &&
                   scheduler.CurrentTick() > gc_submission_tick,
               "normal GC retained or failed to publish an aged dirty Buffer");
+
+      if (async_gc) {
+        constexpr uint32_t reused_value = 0x6d4c2b1au;
+        MarkGpuWrite(base + first_offset, sizeof(first_value));
+        cache.FillBuffer(base + first_offset, sizeof(first_value), first_value,
+                         false);
+        const auto pending_owner =
+            BufferCacheTestAccess::PageOwner(cache, base + first_offset);
+        BufferCacheTestAccess::PresentFrames(cache, 8);
+        cache.RunGarbageCollector();
+        Require(name, "asynchronous dirty ownership",
+                cache.IsRegionRegistered(base + first_offset, sizeof(first_value)) &&
+                    cache.GetBuffer(pending_owner).gc_pending,
+                "GC dropped an owner before its download completed");
+        MarkGpuWrite(base + first_offset, sizeof(reused_value));
+        cache.FillBuffer(base + first_offset, sizeof(reused_value), reused_value,
+                         false);
+        CompleteGc();
+        Require(name, "asynchronous re-dirty retention",
+                BufferCacheTestAccess::PageOwner(cache, base + first_offset) ==
+                        pending_owner &&
+                    !cache.GetBuffer(pending_owner).gc_pending &&
+                    cache.HasGpuDirtyBytes(base + first_offset,
+                                           sizeof(reused_value)),
+                "GC discarded an owner or newer GPU writes after reuse");
+        cache.ReadMemory(base + first_offset, sizeof(reused_value));
+        uint32_t reused_backing = 0;
+        Require(name, "asynchronous re-dirty publication",
+                Libs::LibKernel::Memory::TryReadBacking(
+                    base + first_offset, &reused_backing, sizeof(reused_backing)) &&
+                    reused_backing == reused_value,
+                "GC's older download overwrote the reused owner's newer value");
+        BufferCacheTestAccess::PresentFrames(cache, 8);
+        cache.RunGarbageCollector();
+        CompleteGc();
+      }
 
       // Re-arm the same dirty state, aged past the critical policy's 80 ticks, for the
       // publication-ordering check below.
@@ -5429,6 +5477,9 @@ public:
       });
       cache.RunGarbageCollector();
       gc_returned = true;
+      // Submit before joining: asynchronous GC no longer submits the tick that
+      // starts the older priority callback on its own.
+      CompleteGc();
       release_publication.join();
       scheduler.WaitPriorityOperations(older_publication_tick);
 
@@ -5492,6 +5543,10 @@ public:
       // be retained, and the clean candidate must not be hidden behind them.
       cache.RunGarbageCollector();
       cache.RunGarbageCollector();
+      CompleteGc();
+      // Retirement clears the address table in the next tick and defers the
+      // native allocation's destruction through that tick as well.
+      CompleteGc();
       uint32_t starvation_first_backing = 0;
       uint32_t starvation_last_backing = 0;
       std::memcpy(&starvation_first_backing, memory + starvation_offset,
@@ -5644,6 +5699,7 @@ public:
         for (uint32_t tick = 0; tick <= 160; tick++) {
           cache.RunGarbageCollector();
         }
+        CompleteGc();
         // The capacity-sized case can wrap the ring; the oversized case must
         // keep its separate staging allocation alive through publication.
         Require(name, "large synchronized retirement",
@@ -5706,6 +5762,7 @@ public:
       for (uint32_t tick = 0; tick <= 160; tick++) {
         cache.RunGarbageCollector();
       }
+      CompleteGc();
       Require(name, "per-owner fixed-ring retirement",
               !cache.IsRegionRegistered(base + grouped_first_offset,
                                         grouped_owner_size) &&
@@ -5809,6 +5866,7 @@ public:
       for (uint32_t tick = 0; tick <= 160; ++tick) {
         cache.RunGarbageCollector();
       }
+      CompleteGc();
       Require(name, "sparse multi-owner GC submission",
               scheduler.CurrentTick() == sparse_gc_tick + 1 &&
                   !cache.IsRegionRegistered(base + sparse_offset,
@@ -5838,6 +5896,7 @@ public:
       for (uint32_t tick = 0; tick <= 160; tick++) {
         cache.RunGarbageCollector();
       }
+      CompleteGc();
       Require(name, "disjoint synchronized retirement",
               !cache.IsRegionRegistered(base + disjoint_owner_offset,
                                         disjoint_owner_size),
@@ -5901,6 +5960,7 @@ public:
       for (uint32_t tick = 0; tick <= 160; tick++) {
         cache.RunGarbageCollector();
       }
+      CompleteGc();
       Require(name, "reacquire synchronized retirement",
               !cache.IsRegionRegistered(base + reacquire_owner_offset,
                                         reacquire_owner_size),
@@ -40892,9 +40952,13 @@ void CheckVulkan13FeatureRequirements() {
   std::printf("[host]    %-32s ok\n", "Vulkan13FeatureRequirements");
 }
 
-void CheckPm4AcquireMemNoOp(RenderContext &renderer) {
+void CheckPm4AcquireMemBarrier(RenderContext &renderer) {
+  constexpr const char *name = "Pm4AcquireMemBarrier";
   GraphicsInitJmpTables();
   CommandProcessor processor(renderer, 0);
+  processor.BufferInit();
+  const auto barriers_before =
+      RecordedCommands::g_counts[RecordedCommands::FullBarriers].load();
   const std::array<uint32_t, 6> standard_payload{0x00400000u, 1u, 0u,
                                                  0u,          0u, 10u};
   const std::array<uint32_t, 7> custom_payload{
@@ -40902,17 +40966,21 @@ void CheckPm4AcquireMemNoOp(RenderContext &renderer) {
       0x2468ace0u, 0xaaaaaaaau, 0x55555555u};
   const auto standard_before = standard_payload;
   const auto custom_before = custom_payload;
-  Require("Pm4AcquireMemNoOp", "recognized packets",
+  Require(name, "recognized packets",
           CpOpAcquireMem(processor, 0xC0055800u, standard_payload.data(), 0,
                          0) == 6 &&
               CpOpAcquireMem(processor, 0xc0061050u, custom_payload.data(), 0,
                              0) == 7 &&
               standard_payload == standard_before &&
               custom_payload == custom_before,
-          "ACQUIRE_MEM did not consume both pinned packet forms as "
-          "side-effect-free "
-          "no-ops");
-  std::printf("[host]    %-32s ok\n", "Pm4AcquireMemNoOp");
+          "ACQUIRE_MEM did not consume both pinned packet forms without "
+          "changing their payloads");
+  Require(name, "guest synchronization",
+          RecordedCommands::g_counts[RecordedCommands::FullBarriers].load() ==
+              barriers_before + (GuestGpu::GuestPm4Barriers() ? 2u : 0u),
+          "ACQUIRE_MEM did not follow the configured guest barrier policy");
+  processor.BufferWait();
+  std::printf("[host]    %-32s ok\n", name);
 }
 
 void CheckPm4SyntheticOcclusionCounterDump(RenderContext &renderer) {
@@ -41619,6 +41687,7 @@ static_assert(offsetof(CommandBufferLayout, reserved_dw) == 0x30);
 void CheckPm4WaitPackets(RenderContext &renderer) {
   GraphicsInitJmpTables();
   CommandProcessor processor(renderer, 0);
+  processor.BufferInit();
   constexpr auto packet_mismatch = static_cast<int>(0x8a6c000cu);
   const auto execute = [&](uint32_t *packet, uint32_t size_dw) {
     Pm4Execution execution;
@@ -41748,6 +41817,7 @@ void CheckPm4WaitPackets(RenderContext &renderer) {
           !Gen5::AgcIsInternalDataPacket(
               KYTY_PM4(2, Pm4::IT_SET_UCONFIG_REG, 1), &short_payload),
       "wait patch accepted a packet without the metadata prefix");
+  processor.BufferWait();
   std::printf("[host]    %-32s ok\n", "Pm4WaitPackets");
 }
 
@@ -42072,6 +42142,7 @@ void CheckPm4IndirectControlFlow(RenderContext &renderer) {
 void CheckPm4WaitResume(RenderContext &renderer) {
   GraphicsInitJmpTables();
   CommandProcessor processor(renderer, 0);
+  processor.BufferInit();
 
   uint32_t label = 0;
   uint32_t prefix = 0;
@@ -42133,6 +42204,7 @@ void CheckPm4WaitResume(RenderContext &renderer) {
       processor.Process(execution, commands) == Pm4ProcessResult::Complete &&
           prefix == 11 && child_observation == 0 && suffix == 22,
       "resumed indirect wait replayed a child or did not finish its parent");
+  processor.BufferWait();
   std::printf("[host]    %-32s ok\n", "Pm4WaitResume");
 }
 
@@ -42824,6 +42896,13 @@ int main(int argc, char **argv) {
     CheckPm4ContextStateOperations(vulkan.RuntimeRenderer());
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--pm4-sync-only") == 0) {
+    VulkanHarness vulkan;
+    CheckPm4AcquireMemBarrier(vulkan.RuntimeRenderer());
+    CheckPm4WaitPackets(vulkan.RuntimeRenderer());
+    CheckPm4WaitResume(vulkan.RuntimeRenderer());
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--pm4-wait-only") == 0) {
     VulkanHarness vulkan;
     CheckPm4WaitPackets(vulkan.RuntimeRenderer());
@@ -43081,7 +43160,7 @@ int main(int argc, char **argv) {
   CheckErrorDialogLifecycle();
   CheckSigninDialogLifecycle();
   CheckVulkan13FeatureRequirements();
-  CheckPm4AcquireMemNoOp(vulkan.RuntimeRenderer());
+  CheckPm4AcquireMemBarrier(vulkan.RuntimeRenderer());
   CheckPm4SyntheticOcclusionCounterDump(vulkan.RuntimeRenderer());
   CheckPm4Predication(vulkan.RuntimeRenderer());
   CheckPm4StencilInfoValueLane(vulkan.RuntimeRenderer());

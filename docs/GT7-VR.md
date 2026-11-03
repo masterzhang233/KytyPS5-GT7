@@ -4,6 +4,16 @@ This experimental Windows build adds GT7 internal scene scaling and native stere
 SteamVR. Supply your own unpacked game. The release contains no game executable, game resources,
 save data, captured shaders, or generated caches.
 
+Preview 2.3 updates the upstream base from `KytyPS5-2026-10-26-55a02de` to
+[`KytyPS5-2026-10-28-f908636`](https://github.com/usa-ratt/KytyPS5-GT7/releases/tag/KytyPS5-2026-10-28-f908636),
+including the intervening racing wheel, shader, GPU scheduling and video memory changes.
+The Chinese launcher, SteamVR/render profiles, diagnostics and both audited executable images
+remain supported. Upgrading from Preview 2.2 crosses a shader compiler change, so shaders are
+compiled again once; the first visit to a track or menu can show missing details or stutter while
+compilation completes. See the [Preview 2.3 Chinese update notes](releases/Preview-2.3.zh-CN.md)
+for upgrade instructions and validation limits. Download this prerelease manually: the launcher's
+GitHub latest-release check does not select prereleases.
+
 The profiles support **PPSA01317, version 01.710.000**. Compatibility is checked from the
 normalized executable image rather than the outer `eboot.bin` container. The identity covers the
 ELF entry point plus every `PT_LOAD` segment's flags, virtual address, file and memory sizes,
@@ -146,4 +156,8 @@ with the render patches, not complete gameplay, online-service or headset valida
 
 This integration is maintained by masterzhang233 and is based on
 [usa-ratt/KytyPS5-GT7](https://github.com/usa-ratt/KytyPS5-GT7), tag
-`KytyPS5-2026-10-26-55a02de`, with the upstream KytyPS5 contributors' work retained.
+`KytyPS5-2026-10-28-f908636` (commit `f9086362bf80358ec8420d531b4db7deeadc023b`),
+with the upstream KytyPS5 contributors' work retained. This upgrade includes mixo03's racing
+wheel support, SakuraLainMaid's video memory and build changes, and shader optimizations
+credited upstream to strxno. The upstream performance measurements are not measurements of
+this SteamVR integration.

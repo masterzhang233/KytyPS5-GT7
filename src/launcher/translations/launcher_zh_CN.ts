@@ -1164,6 +1164,12 @@ This cannot be undone.</source>
         <source>Global settings...</source>
         <translation>全局设置…</translation>
     </message>
+    <message>
+        <location filename="../forms/configuration_list_widget.ui" line="128"/>
+        <location filename="../src/configurationListWidget.cpp" line="218"/>
+        <source>Map a racing wheel</source>
+        <translation>设置方向盘映射</translation>
+    </message>
 </context>
 <context>
     <name>InputCaptureDialog</name>
@@ -1767,6 +1773,151 @@ Open this run&apos;s log folder or export a diagnostic ZIP for analysis.</source
         <source>Reward: %1</source>
         <translation>奖励：%1</translation>
     </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="43"/>
+        <source>Steering</source>
+        <translation>转向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="44"/>
+        <source>Throttle</source>
+        <translation>油门</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="45"/>
+        <source>Brake</source>
+        <translation>刹车</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="46"/>
+        <source>Clutch</source>
+        <translation>离合器</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="47"/>
+        <source>Handbrake</source>
+        <translation>手刹</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="48"/>
+        <source>Cross ✕</source>
+        <translation>叉号 ✕</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="49"/>
+        <source>Circle ○</source>
+        <translation>圆圈 ○</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="50"/>
+        <source>Square □</source>
+        <translation>方块 □</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="51"/>
+        <source>Triangle △</source>
+        <translation>三角 △</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="52"/>
+        <source>D-pad up</source>
+        <translation>方向键上</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="53"/>
+        <source>D-pad down</source>
+        <translation>方向键下</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="54"/>
+        <source>D-pad left</source>
+        <translation>方向键左</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="55"/>
+        <source>D-pad right</source>
+        <translation>方向键右</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="56"/>
+        <source>L1 (left paddle)</source>
+        <translation>L1（左拨片）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="57"/>
+        <source>R1 (right paddle)</source>
+        <translation>R1（右拨片）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="58"/>
+        <source>L2</source>
+        <translation>L2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="59"/>
+        <source>R2</source>
+        <translation>R2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="60"/>
+        <source>L3</source>
+        <translation>L3</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="61"/>
+        <source>R3</source>
+        <translation>R3</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="62"/>
+        <source>Options</source>
+        <translation>选项</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="63"/>
+        <source>Touchpad press</source>
+        <translation>触摸板按下</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="64"/>
+        <source>Gear 1</source>
+        <translation>1 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="65"/>
+        <source>Gear 2</source>
+        <translation>2 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="66"/>
+        <source>Gear 3</source>
+        <translation>3 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="67"/>
+        <source>Gear 4</source>
+        <translation>4 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="68"/>
+        <source>Gear 5</source>
+        <translation>5 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="69"/>
+        <source>Gear 6</source>
+        <translation>6 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="70"/>
+        <source>Gear 7</source>
+        <translation>7 挡</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="71"/>
+        <source>Gear R</source>
+        <translation>倒挡</translation>
+    </message>
 </context>
 <context>
     <name>TrophyViewerDialog</name>
@@ -1862,6 +2013,399 @@ Open the release page to download it?</source>
         <location line="+3"/>
         <source>KytyPS5 Update</source>
         <translation>KytyPS5 更新</translation>
+    </message>
+</context>
+<context>
+    <name>WheelMappingDialog</name>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="97"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="104"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="255"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="355"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="709"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="715"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="739"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="751"/>
+        <source>Racing wheel</source>
+        <translation>方向盘</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="105"/>
+        <source>%1 could not be read (%2); starting from an empty mapping.</source>
+        <translation>无法读取 %1（%2）；将从空白映射开始。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="118"/>
+        <source>SDL joystick support could not start: %1</source>
+        <translation>无法启动 SDL 摇杆支持：%1</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="142"/>
+        <source>Off</source>
+        <translation>关闭</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="143"/>
+        <source>Fanatec Gran Turismo DD Pro</source>
+        <translation>Fanatec Gran Turismo DD Pro</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="148"/>
+        <source>Emulated wheel</source>
+        <translation>模拟方向盘</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="154"/>
+        <source>Map the wheel here, not in the controller mapping. Pedals at rest should read 0 %; tick Reverse on a pedal that reads 100 % at rest.</source>
+        <translation>请在此设置方向盘映射。踏板松开时的读数应为 0%；若松开时显示 100%，请勾选该踏板的“反向”。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="161"/>
+        <source>Control</source>
+        <translation>控制项</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="161"/>
+        <source>Bound to</source>
+        <translation>绑定输入</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="161"/>
+        <source>Value</source>
+        <translation>当前值</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="174"/>
+        <source>Map</source>
+        <translation>映射</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="175"/>
+        <source>Clear</source>
+        <translation>清除</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="176"/>
+        <source>Reverse</source>
+        <translation>反向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="181"/>
+        <source>Steering: around the centre, in percent of half the travel. Pedals: at the released end, in percent of the whole travel.</source>
+        <translation>转向：中心附近的死区，以半程转向范围的百分比表示。踏板：松开端的死区，以全行程的百分比表示。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="186"/>
+        <source>1 is linear; above 1 is finer near the centre or the released end, below 1 is quicker.</source>
+        <translation>1 为线性响应；大于 1 时，中心或松开端附近的控制更精细；小于 1 时，响应更灵敏。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="191"/>
+        <source>Dead zone</source>
+        <translation>死区</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="193"/>
+        <source>Curve</source>
+        <translation>响应曲线</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="198"/>
+        <source>Force feedback and rotation</source>
+        <translation>力反馈与转角</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="206"/>
+        <source>Strength</source>
+        <translation>强度</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="208"/>
+        <source>Force-feedback device</source>
+        <translation>力反馈设备</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="210"/>
+        <source>Steering axis (default)</source>
+        <translation>转向轴（默认）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="212"/>
+        <source>Cartesian</source>
+        <translation>笛卡尔坐标</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="213"/>
+        <source>Polar</source>
+        <translation>极坐标</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="214"/>
+        <source>Change only if the wheel feels no force with the default; some DirectInput drivers ignore the steering-axis encoding.</source>
+        <translation>仅在默认设置下方向盘没有力反馈时更改；部分 DirectInput 驱动不支持转向轴编码。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="216"/>
+        <source>Direction encoding</source>
+        <translation>方向编码</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="217"/>
+        <source>Reverse force direction</source>
+        <translation>反转力反馈方向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="218"/>
+        <source>Mirrors the game's forces. Run the force test first; tick this only if the wheel still pulls away from the centre in the game.</source>
+        <translation>反转游戏输出的力反馈。请先运行力反馈测试；仅在游戏中方向盘仍向偏离中心的方向拉扯时勾选。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="223"/>
+        <source> degrees</source>
+        <translation> 度</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="224"/>
+        <source>The rotation set in the wheel's own software. When the game sets a car's steering lock, steering is scaled to it.</source>
+        <translation>填写方向盘配套软件中设置的转角。游戏指定车辆的最大转向角时，将据此缩放转向输入。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="226"/>
+        <source>Wheel rotation</source>
+        <translation>方向盘转角</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="228"/>
+        <source>Force direction</source>
+        <translation>力反馈方向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="229"/>
+        <source>Soft end stop at the car's steering lock</source>
+        <translation>在车辆最大转向角处施加软限位</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="230"/>
+        <source>Pushes back past the car's lock. Works once the force test has measured the wheel's force direction.</source>
+        <translation>超过车辆最大转向角时施加回推力。力反馈测试测得方向盘的力反馈方向后生效。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="234"/>
+        <source>Keep reading controllers when the game window has no focus (all of them, pads too)</source>
+        <translation>游戏窗口失去焦点时继续读取所有控制器（包括手柄）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="237"/>
+        <source>Compute damper and friction in the emulator (for drivers that mishandle them)</source>
+        <translation>由模拟器计算阻尼和摩擦力（适用于驱动处理异常的设备）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="239"/>
+        <source>Works once the force test has measured the wheel's force direction.</source>
+        <translation>力反馈测试测得方向盘的力反馈方向后生效。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="249"/>
+        <source>Import RPCS3 G27 mapping...</source>
+        <translation>导入 RPCS3 G27 映射…</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="250"/>
+        <location filename="../src/wheelMappingDialog.cpp" line="743"/>
+        <source>Test force feedback</source>
+        <translation>测试力反馈</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="256"/>
+        <source>Steering is not mapped, so the game will not see the wheel. Save anyway?</source>
+        <translation>尚未映射转向，游戏将无法识别方向盘。仍要保存吗？</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="323"/>
+        <source>not measured: run Test force feedback</source>
+        <translation>尚未测量：请运行“测试力反馈”</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="325"/>
+        <source>measured</source>
+        <translation>已测量</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="326"/>
+        <source>measured (reversed)</source>
+        <translation>已测量（反向）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="356"/>
+        <source>Cannot save %1: %2</source>
+        <translation>无法保存 %1：%2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="416"/>
+        <source>The steering device</source>
+        <translation>转向输入设备</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="428"/>
+        <source>Not connected (0x%1)</source>
+        <translation>未连接（0x%1）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="437"/>
+        <source>No joystick found. Connect and power the wheel.</source>
+        <translation>未检测到摇杆设备。请连接方向盘并接通电源。</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../src/wheelMappingDialog.cpp" line="438"/>
+        <source>%n device(s) connected. Select a control and press Map.</source>
+        <translation>
+            <numerusform>已连接 %n 个设备。请选择控制项并点击“映射”。</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="474"/>
+        <source>(not bound)</source>
+        <translation>（未绑定）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="478"/>
+        <source>absent %1:%2</source>
+        <translation>未连接 %1:%2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="482"/>
+        <source>%1: axis %2</source>
+        <translation>%1：轴 %2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="483"/>
+        <source>%1: button %2</source>
+        <translation>%1：按钮 %2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="485"/>
+        <source>%1: hat %2 %3</source>
+        <translation>%1：方向帽 %2 %3</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="501"/>
+        <source>absent</source>
+        <translation>未连接</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="538"/>
+        <source>pressed</source>
+        <translation>已按下</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="601"/>
+        <source>%1 bound to %2.</source>
+        <translation>%1 已绑定至 %2。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="604"/>
+        <source>Nothing was pressed or moved; %1 unchanged.</source>
+        <translation>未检测到按键或移动；%1 保持不变。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="637"/>
+        <source>%1: %2 now (%3 s left)</source>
+        <translation>%1：现在请%2（剩余 %3 秒）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="639"/>
+        <source>move the axis or press a button</source>
+        <translation>移动轴或按下按钮</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="640"/>
+        <source>press the button</source>
+        <translation>按下按钮</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="702"/>
+        <source>RPCS3 LogitechG27.yml</source>
+        <translation>RPCS3 LogitechG27.yml</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="703"/>
+        <source>RPCS3 G27 mapping (LogitechG27.yml);;YAML (*.yml)</source>
+        <translation>RPCS3 G27 映射 (LogitechG27.yml);;YAML (*.yml)</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="716"/>
+        <source>Not imported: %1</source>
+        <translation>导入失败：%1</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="730"/>
+        <source>Imported %1.</source>
+        <translation>已导入 %1。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="740"/>
+        <source>No force-feedback device is connected.</source>
+        <translation>未连接力反馈设备。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="744"/>
+        <source>The wheel will turn briefly one way and then the other, at a low force. Keep your hands near the rim, not on it.</source>
+        <translation>方向盘将以较小的力向两个方向分别短暂转动。请将双手放在轮缘附近，不要握住方向盘。</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="752"/>
+        <source>Cannot open force feedback: %1</source>
+        <translation>无法启动力反馈：%1</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="788"/>
+        <source>the device refused the effect: %1</source>
+        <translation>设备拒绝了力反馈效果：%1</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="798"/>
+        <source>%1 force: %2</source>
+        <translation>%1力反馈：%2</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="799"/>
+        <source>positive</source>
+        <translation>正向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="799"/>
+        <source>negative</source>
+        <translation>负向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="800"/>
+        <source>no movement</source>
+        <translation>未转动</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="801"/>
+        <source>turned right</source>
+        <translation>向右转动</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="802"/>
+        <source>turned left</source>
+        <translation>向左转动</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="811"/>
+        <source>force direction measured</source>
+        <translation>已测得力反馈方向</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="814"/>
+        <source>force direction measured (reversed)</source>
+        <translation>已测得力反馈方向（反向）</translation>
+    </message>
+    <message>
+        <location filename="../src/wheelMappingDialog.cpp" line="816"/>
+        <source>unclear, not changed (hands off the rim, then test again)</source>
+        <translation>方向不明确，未更改（请松开方向盘后重新测试）</translation>
     </message>
 </context>
 </TS>

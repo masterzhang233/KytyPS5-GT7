@@ -144,6 +144,21 @@ def exercise(report, exe, reference, alternate, scratch):
                 markers.append("accepted audited alternate executable image")
             run_case(report, exe, game, f"{label}-{name}", args, 0, markers)
 
+        # The upstream wheel flags must coexist with both fork render modes.
+        # Preflight must not initialize devices or read/create a wheel mapping.
+        wheel_config = scratch / "wheel mapping with spaces.json"
+        for name, args, filename in PROFILES:
+            if name not in ("desktop-1440", "vr-100"):
+                continue
+            markers = [VERIFIED, filename]
+            if label == "alternate":
+                markers.append("accepted audited alternate executable image")
+            run_case(report, exe, game, f"{label}-{name}-with-wheel",
+                     [*args, "--wheel", "true", "--wheel-config", str(wheel_config)],
+                     0, markers)
+        if wheel_config.exists():
+            raise AssertionError("Preflight created a wheel mapping")
+
     default_args = ["--gt7-desktop-height", "1440"]
     unknown = scratch / "unknown-eboot.bin"
     report["unknown_image_mutation"] = mutate_unpatched_byte(reference, unknown, patch_dir)
@@ -245,7 +260,7 @@ def main():
         for path, details in report["runtime"].items():
             details["sha256_after"] = sha256(Path(path))
             details["unchanged"] = details["sha256_before"] == details["sha256_after"]
-        report["passed"] = ("error" not in report and len(report["cases"]) == 29
+        report["passed"] = ("error" not in report and len(report["cases"]) == 33
                             and all(case["passed"] for case in report["cases"])
                             and all(item["unchanged"] for item in report["inputs"].values())
                             and all(item["unchanged"] for item in report["runtime"].values()))

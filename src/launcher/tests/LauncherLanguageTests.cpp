@@ -52,6 +52,21 @@ int main(int argc, char* argv[]) {
 	Check(QCoreApplication::translate("MainDialogPrivate", "Diagnostic logs") ==
 	          QStringLiteral("诊断日志"),
 	      "embedded catalog did not translate launcher text");
+	Check(QCoreApplication::translate("ConfigurationListWidget", "Map a racing wheel") ==
+	          QStringLiteral("设置方向盘映射"),
+	      "wheel toolbar action is missing from the embedded Chinese catalog");
+	Check(QCoreApplication::translate("WheelMappingDialog", "Racing wheel") ==
+	          QStringLiteral("方向盘"),
+	      "wheel dialog text is missing from the embedded Chinese catalog");
+	Check(QCoreApplication::translate("QObject", "Steering") == QStringLiteral("转向"),
+	      "wheel controls use the QObject translation context");
+	for (int devices: {0, 1, 3}) {
+		Check(QCoreApplication::translate("WheelMappingDialog",
+		                                  "%n device(s) connected. Select a control and press Map.",
+		                                  "", devices) ==
+		          QStringLiteral("已连接 %1 个设备。请选择控制项并点击“映射”。").arg(devices),
+		      "connected wheel count did not use the Chinese numerus translation");
+	}
 
 	std::cout << "Launcher language tests passed\n";
 	return EXIT_SUCCESS;

@@ -807,6 +807,16 @@ target_link_libraries(image_page_table_tests common fmt::fmt)
 target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(shader_recompiler_compute_tests "${KYTY_TESTS_DIR}/ShaderRecompilerComputeTests.cpp")
+if(WIN32)
+	# These fixtures keep full RenderContext objects on the stack. With the new
+	# renderer state and PGO they exceed the default 1 MiB Windows stack; the
+	# emulator's renderer is heap-allocated. Match the usual 8 MiB Linux stack.
+	if(KYTY_CLANG_CL)
+		target_link_options(shader_recompiler_compute_tests PRIVATE "/STACK:8388608")
+	else()
+		target_link_options(shader_recompiler_compute_tests PRIVATE "-Wl,--stack,8388608")
+	endif()
+endif()
 
 set(gpu_test_generated_dir "${PROJECT_BINARY_DIR}/gpu_test_shaders")
 set(gpu_test_ms_depth_source

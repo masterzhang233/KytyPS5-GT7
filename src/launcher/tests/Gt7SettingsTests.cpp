@@ -1,11 +1,14 @@
 #include "configuration.h"
 #include "gt7Settings.h"
+#include "wheelMappingDialog.h"
 
 #include <QCoreApplication>
 #include <QJsonObject>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QTranslator>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 int failures = 0;
@@ -15,12 +18,26 @@ void Check(bool pass, const char* what) {
 		++failures;
 	}
 }
+
+class TranslationContextProbe final: public QTranslator {
+public:
+	bool isEmpty() const override { return false; }
+	QString translate(const char* context, const char* source, const char*, int) const override {
+		return std::strcmp(source, "Racing wheel") == 0 ? QString::fromLatin1(context) : QString();
+	}
+};
 }
 
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
+	TranslationContextProbe probe;
+	app.installTranslator(&probe);
+	Check(WheelMappingDialog::tr("Racing wheel") == QStringLiteral("WheelMappingDialog"),
+	      "wheel dialog uses its own translation context instead of QDialog");
+	app.removeTranslator(&probe);
 	Configuration original;
 	original.title_id = "PPSA01317";
+	Check(!original.controller.wheel_enabled, "racing wheel is disabled for new configurations");
 	Check(original.console_language == 11, "new configurations default to Simplified Chinese");
 	Check(Gt7ProfileArguments(original).isEmpty(), "existing/native defaults do not add a patch");
 	original.gt7_desktop_height = 1440;
@@ -39,19 +56,42 @@ int main(int argc, char** argv) {
 	QTemporaryDir temporary;
 	Check(temporary.isValid(), "temporary settings directory");
 	QSettings stored(temporary.filePath("settings.ini"), QSettings::IniFormat);
+	original.controller.wheel_enabled = true;
+	original.controller.wheel_config = temporary.filePath("wheel.json");
 	original.WriteSettings(&stored);
+	original.controller.WriteSettings(&stored);
 	stored.sync();
 	Configuration loaded;
 	loaded.ReadSettings(&stored);
+	loaded.controller.ReadSettings(&stored);
 	loaded.title_id = original.title_id;
 	Check(loaded.gt7_desktop_height == 1440 && loaded.gt7_vr_enabled && loaded.gt7_vr_scale == 120,
 	      "settings round-trip retains desktop choice and VR choice independently");
+	Check(loaded.controller.wheel_enabled && Gt7ProfileArguments(loaded) == Gt7ProfileArguments(original),
+	      "global wheel preference survives settings round-trip alongside the VR profile");
+	Check(!stored.contains("wheel_config") && loaded.controller.wheel_config.isEmpty(),
+	      "wheel configuration path remains derived from the current settings location");
+	loaded.controller.wheel_config = temporary.filePath("wheel.json");
+	Configuration per_game;
+	per_game.gt7_desktop_height = 2160;
+	per_game.gt7_vr_enabled = true;
+	per_game.gt7_vr_scale = 125;
+	loaded.CopyEmulatorSettingsFrom(per_game);
+	Check(loaded.controller.wheel_enabled && loaded.controller.wheel_config == original.controller.wheel_config &&
+	          loaded.gt7_desktop_height == 2160 &&
+	          Gt7ProfileArguments(loaded) == QStringList {"--vr", "--gt7-vr-scale", "125"},
+	      "per-game rendering settings retain the global wheel preference and mapping path");
+	loaded.controller.wheel_enabled = false;
+	Check(Gt7ProfileArguments(loaded) == QStringList {"--vr", "--gt7-vr-scale", "125"},
+	      "disabling the wheel preserves the selected VR profile");
 	QSettings old_settings(temporary.filePath("old.ini"), QSettings::IniFormat);
 	Configuration old;
 	old.ReadSettings(&old_settings);
+	old.controller.ReadSettings(&old_settings);
 	Check(old.console_language == 11, "missing language setting defaults to Simplified Chinese");
 	Check(old.gt7_desktop_height == 0 && !old.gt7_vr_enabled && old.gt7_vr_scale == 100,
 	      "older settings receive safe native/VR-off defaults");
+	Check(!old.controller.wheel_enabled, "older settings leave racing-wheel emulation disabled");
 	QSettings explicit_settings(temporary.filePath("explicit-language.ini"), QSettings::IniFormat);
 	explicit_settings.setValue(QStringLiteral("console_language"), 1);
 	explicit_settings.sync();
