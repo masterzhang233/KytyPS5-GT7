@@ -71,7 +71,7 @@ void PutBytes(std::vector<uint8_t>& bytes, size_t offset, const void* value, siz
 	std::memcpy(bytes.data() + offset, value, size);
 }
 
-enum class FixtureMutation { None, Entry, MemorySize, Alignment };
+enum class FixtureMutation { None, Entry, MemorySize, Alignment, Payload };
 
 std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, bool self,
 	                                           bool compressed = false,
@@ -139,6 +139,7 @@ std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, 
 		PutBytes(bytes, 0x200, first.data(), first.size());
 		PutBytes(bytes, 0x300, second.data(), second.size());
 	}
+	if (mutation == FixtureMutation::Payload) bytes[(self ? 0x300 : 0x200) + 1] ^= 1;
 
 	std::ofstream stream(path, std::ios::binary | std::ios::trunc);
 	stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -149,6 +150,41 @@ std::filesystem::path WriteExecutableFixture(const std::filesystem::path& path, 
 
 int main(int argc, char* argv[]) {
 	using namespace Loader::Gt7Profile;
+	std::filesystem::path patch_directory;
+	std::vector<std::filesystem::path> executables;
+	bool has_patch_directory = false;
+	for (int index = 1; index < argc; ++index) {
+		if (std::string(argv[index]) == "--patch-dir") {
+			Require(!has_patch_directory && index + 1 < argc,
+			        "--patch-dir requires one path and must not be repeated");
+			patch_directory = argv[++index];
+			has_patch_directory = true;
+		} else {
+			executables.emplace_back(argv[index]);
+		}
+	}
+	Require(!has_patch_directory || !executables.empty(),
+	        "--patch-dir requires at least one real executable argument");
+
+	Require(IsSupportedExecutableImage(EbootImageSha256), "reference image identity rejected");
+	Require(IsSupportedExecutableImage(EbootAlternateImageSha256), "audited alternate image identity rejected");
+	for (const auto& supported : {std::string(EbootImageSha256), std::string(EbootAlternateImageSha256)}) {
+		Require(!IsSupportedExecutableImage(supported.substr(1)), "truncated image identity accepted");
+		Require(!IsSupportedExecutableImage(supported + "0"), "oversized image identity accepted");
+		Require(!IsSupportedExecutableImage(" " + supported), "whitespace-prefixed image identity accepted");
+		std::string changed = supported;
+		changed[0] = changed[0] == '0' ? '1' : '0';
+		Require(!IsSupportedExecutableImage(changed), "modified image identity accepted");
+		changed = supported;
+		for (auto& character : changed) {
+			if (character >= 'a' && character <= 'f') character -= 'a' - 'A';
+		}
+		Require(!IsSupportedExecutableImage(changed), "case-altered image identity accepted");
+	}
+	Require(!IsSupportedExecutableImage(""), "empty image identity accepted");
+	Require(!IsSupportedExecutableImage(std::string(64, '0')), "unknown image identity accepted");
+	Require(!IsSupportedExecutableImage(std::string(64, 'g')), "non-hex image identity accepted");
+
 	std::string error;
 	Request desktop{.desktop_height = 1440};
 	Require(ValidateRequest(desktop, false, false, error), "desktop request rejected");
@@ -187,12 +223,15 @@ int main(int argc, char* argv[]) {
 	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_memsz_test.bin";
 	const auto changed_alignment =
 	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_align_test.bin";
+	const auto changed_payload =
+	    std::filesystem::temp_directory_path() / "kyty_gt7_profile_changed_payload_test.bin";
 	WriteExecutableFixture(plain, false);
 	WriteExecutableFixture(self, true);
 	WriteExecutableFixture(compressed, true, true);
 	WriteExecutableFixture(changed_entry, false, false, FixtureMutation::Entry);
 	WriteExecutableFixture(changed_memory_size, false, false, FixtureMutation::MemorySize);
 	WriteExecutableFixture(changed_alignment, false, false, FixtureMutation::Alignment);
+	WriteExecutableFixture(changed_payload, false, false, FixtureMutation::Payload);
 	std::string plain_digest;
 	std::string self_digest;
 	Require(ExecutableImageSha256(plain, plain_digest, error), "plain ELF image hashing failed");
@@ -200,12 +239,16 @@ int main(int argc, char* argv[]) {
 	Require(plain_digest == "946e022841d698fde7598cd8ceecaec32c4c61053f25018aa3ae023e62ba7aa2",
 	        "synthetic executable-image digest changed");
 	Require(self_digest == plain_digest, "SELF and plain ELF image identities differ");
-	for (const auto& changed : {changed_entry, changed_memory_size, changed_alignment}) {
+	Require(!IsSupportedExecutableImage(plain_digest), "unrecognized synthetic image identity accepted");
+	Require(!Prepare(desktop, plain, {}, patch, error) && patch == "untouched" &&
+	        error.find("unsupported eboot.bin") != std::string::npos,
+	        "valid ELF with an unsupported image identity was accepted or changed output patch");
+	for (const auto& changed : {changed_entry, changed_memory_size, changed_alignment, changed_payload}) {
 		std::string changed_digest;
 		Require(ExecutableImageSha256(changed, changed_digest, error),
 		        "changed ELF image hashing failed");
 		Require(changed_digest != plain_digest,
-		        "ELF load semantics changed without changing executable-image identity");
+		        "ELF load semantics or bytes changed without changing executable-image identity");
 	}
 	uint64_t file_offset = 0;
 	Require(FileOffset(plain, 0x1002, 2, file_offset, error) && file_offset == 0x202,
@@ -221,11 +264,40 @@ int main(int argc, char* argv[]) {
 	std::filesystem::remove(changed_entry);
 	std::filesystem::remove(changed_memory_size);
 	std::filesystem::remove(changed_alignment);
+	std::filesystem::remove(changed_payload);
 
-	for (int index = 1; index < argc; ++index) {
-		Require(ExecutableImageSha256(argv[index], digest, error),
+	// Real game files are supplied locally, never embedded in these tests or the repository.
+	// With --patch-dir, exercise the same preflight used by every packaged preset.
+	struct ProfileCase {
+		Request request;
+		const char* file_name;
+	};
+	const std::array<ProfileCase, 8> profiles {{
+	    {{.desktop_height = 0}, "GT7-Desktop-Internal-Native.json"},
+	    {{.desktop_height = 1080}, "GT7-Desktop-Internal-1080.json"},
+	    {{.desktop_height = 1440}, "GT7-Desktop-Internal-1440.json"},
+	    {{.desktop_height = 2160}, "GT7-Desktop-Internal-2160.json"},
+	    {{.vr_scale = 100}, "GT7-SteamVR-EyeScale-100.json"},
+	    {{.vr_scale = 110}, "GT7-SteamVR-EyeScale-110.json"},
+	    {{.vr_scale = 120}, "GT7-SteamVR-EyeScale-120.json"},
+	    {{.vr_scale = 125}, "GT7-SteamVR-EyeScale-125.json"},
+	}};
+	for (const auto& executable : executables) {
+		Require(ExecutableImageSha256(executable, digest, error),
 		        "real executable image could not be inspected");
-		Require(digest == EbootImageSha256, "real executable image digest mismatch");
+		Require(IsSupportedExecutableImage(digest), "real executable image digest is not audited");
+		if (!has_patch_directory) continue;
+		std::string original_digest;
+		Require(Sha256File(executable, original_digest, error), "could not hash real executable before preflight");
+		for (const auto& profile : profiles) {
+			std::filesystem::path selected = "untouched";
+			const bool prepared = Prepare(profile.request, executable, patch_directory, selected, error);
+			Require(prepared, (std::string("real executable preflight failed for ") +
+			                  profile.file_name + ": " + error).c_str());
+			Require(selected == patch_directory / profile.file_name, "preflight selected an unexpected patch");
+		}
+		Require(Sha256File(executable, digest, error) && digest == original_digest,
+		        "preflight modified the real executable");
 	}
 	return 0;
 }

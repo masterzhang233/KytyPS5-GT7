@@ -342,6 +342,10 @@ bool HashExecutableImage(const std::filesystem::path&, const ExecutableImage&, s
 #endif
 } // namespace
 
+bool IsSupportedExecutableImage(const std::string& digest) {
+    return digest == EbootImageSha256 || digest == EbootAlternateImageSha256;
+}
+
 bool ValidateRequest(const Request& request, bool vr, bool custom_patch, std::string& error) {
     if (request.desktop_height != -1 && request.desktop_height != 0 &&
         request.desktop_height != 1080 && request.desktop_height != 1440 && request.desktop_height != 2160)
@@ -414,11 +418,15 @@ bool Prepare(const Request& request, const std::filesystem::path& eboot,
         std::string image_digest;
         if (!InspectExecutable(eboot, image, error) ||
             !HashExecutableImage(eboot, image, image_digest, error)) return false;
-        if (image_digest != EbootImageSha256)
+        if (!IsSupportedExecutableImage(image_digest))
             return Fail(error, "unsupported eboot.bin: expected PPSA01317 01.710.000 executable-image SHA-256 " +
-                std::string(EbootImageSha256) + ", got " + image_digest + " (file SHA-256 " +
+                std::string(EbootImageSha256) + " or " + EbootAlternateImageSha256 +
+                ", got " + image_digest + " (file SHA-256 " +
                 file_digest + "); nothing was patched");
-        if (file_digest != EbootSha256)
+        if (image_digest == EbootAlternateImageSha256)
+            std::printf("GT7 profile: accepted audited alternate executable image; image SHA-256 %s; file SHA-256 %s\n",
+                        image_digest.c_str(), file_digest.c_str());
+        else if (file_digest != EbootSha256)
             std::printf("GT7 profile: accepted compatible executable image from alternate container; file SHA-256 %s\n",
                         file_digest.c_str());
         const auto file_name = request.vr_scale ? "GT7-SteamVR-EyeScale-" + std::to_string(request.vr_scale) + ".json" :
@@ -426,6 +434,8 @@ bool Prepare(const Request& request, const std::filesystem::path& eboot,
         const auto selected = patch_directory / file_name;
         std::ifstream manifest_file(patch_directory / "patches.json");
         const auto manifest = nlohmann::json::parse(manifest_file);
+        // The two compiled-in identities were audited against this exact reference patch
+        // set. A manifest cannot authorize another image or replace its reference identity.
         if (manifest.at("eboot_sha256") != EbootSha256 ||
             manifest.at("executable_image_sha256") != EbootImageSha256)
             return Fail(error, "invalid GT7 patch manifest");

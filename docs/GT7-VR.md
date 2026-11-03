@@ -8,11 +8,23 @@ The profiles support **PPSA01317, version 01.710.000**. Compatibility is checked
 normalized executable image rather than the outer `eboot.bin` container. The identity covers the
 ELF entry point plus every `PT_LOAD` segment's flags, virtual address, file and memory sizes,
 alignment and uncompressed bytes; container file offsets are excluded. A PS5 SELF and an extracted
-ELF are both accepted when those loading semantics match this audited image:
+ELF are both accepted when those loading semantics match either of these audited images:
 
 ```text
 f2fab719a2f5caab44ed389a87953cefca78905a0b9b081d023ad33bccbe3aaf
+b2303c54658ee8c007a7fb0861989397748ac8a04295bdc2049c67673953c71f
 ```
+
+The first is the original reference. The second was added after comparing a reported 1.71
+executable (file SHA-256
+`e3cdeac5e3ce6794e89876a433b0f4579be77e308bf64000e9c388875a2efab3`). Its ELF entry point and
+all five load segments' loading semantics match the reference. The load payloads differ by
+51 bytes at 13 ranges outside the render-profile patch sites: small code/pointer changes,
+process metadata and region strings. Every profile's original instructions and referenced
+render constants were checked in both images. This is an explicitly audited second image,
+not merely another SELF container and not a rule that ignores those differences in other files.
+Both images use the unchanged reference patch manifests. The accepted image identities are
+compiled into the emulator; editing a JSON manifest cannot authorize another executable.
 
 This removes dependence on SELF packaging metadata while retaining code identity and original-byte
 checks at every patch point. An unsupported executable image, changed instruction bytes, missing
@@ -127,6 +139,10 @@ sizing arithmetic and descriptor construction; their GPU allocation/layout calls
 proof of every live render target, frame rate, image quality or compatibility with another update.
 This upstream integration requires its own runtime validation. No performance improvement is
 claimed merely from selecting a profile.
+
+The second 1.71 image was checked with all eight desktop/VR preflight profiles and rejection
+tests. These checks do not execute the game or initialize SteamVR. They establish compatibility
+with the render patches, not complete gameplay, online-service or headset validation for that image.
 
 This integration is maintained by masterzhang233 and is based on
 [usa-ratt/KytyPS5-GT7](https://github.com/usa-ratt/KytyPS5-GT7), tag
