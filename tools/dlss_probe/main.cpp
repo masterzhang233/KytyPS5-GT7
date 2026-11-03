@@ -593,9 +593,9 @@ int wmain(int argc, wchar_t** argv) {
             ValidateReplay(replay);
             report["replay_sequence"] = replay_path.u8string();
         }
-        const unsigned width = replay_mode ? replay.at("width").get<unsigned>() :
+        const unsigned width = replay_mode ? ReplayOutputDimension(replay, "width", "output_width") :
             (argc >= 5 ? Dimension(argv[3]) : (evaluate ? 640u : 2560u));
-        const unsigned height = replay_mode ? replay.at("height").get<unsigned>() :
+        const unsigned height = replay_mode ? ReplayOutputDimension(replay, "height", "output_height") :
             (argc >= 5 ? Dimension(argv[4]) : (evaluate ? 360u : 1440u));
         const auto runtime = std::filesystem::absolute(argv[1]);
         report["runtime_directory"] = runtime.u8string();

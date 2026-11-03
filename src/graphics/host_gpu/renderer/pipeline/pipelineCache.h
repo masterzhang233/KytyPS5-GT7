@@ -343,13 +343,19 @@ public:
 	                              const GraphicsPrograms& programs);
 	// As GetGraphicsPipeline; with PipelineDefer::Allowed, a pipeline the driver does not have
 	// is compiled on a worker thread, and nullptr says to skip this draw.
+	// The opt-in GT7 effect-layer variant accepts the ORIGINAL guest colors and shader inputs.
+	// It retains their modules/layout, but builds for a private, single-sample RGBA16F RT0 with
+	// straight-source RGB over and alpha accumulation. Unsupported state also returns nullptr.
+	// The caller must match the complete effect chain, bind/clear the private attachment, retain
+	// the original viewport/scissor/read-only depth, and avoid repeating guest-visible queries.
 	Pipeline* TryGetGraphicsPipeline(std::span<const RenderColorInfo>       colors,
 	                                 const RenderDepthInfo&                 depth,
 	                                 std::span<const ShaderVertexInputInfo> vertex_info,
 	                                 CommandBuffer&                         command,
 	                                 const ShaderPixelInputInfo*            ps_input_info,
 	                                 vk::PrimitiveTopology topology, bool primitive_restart_enable,
-	                                 const GraphicsPrograms& programs, PipelineDefer defer);
+	                                 const GraphicsPrograms& programs, PipelineDefer defer,
+	                                 bool premultiplied_effect_layer = false);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);
 	// Round 94: as GetComputePipeline, but a pipeline of KYTY_COMPUTE_BACKGROUND_WORDS SPIR-V

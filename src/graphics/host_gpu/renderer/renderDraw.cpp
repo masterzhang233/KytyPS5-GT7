@@ -25,6 +25,8 @@
 #include "graphics/host_gpu/renderer/frameGraphQueries.h"
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/gpuTiming.h"
+#include "graphics/host_gpu/renderer/gt7Dlss.h"
+#include "graphics/host_gpu/renderer/gt7DlssDrawChecks.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/occlusionQueries.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -2672,6 +2674,29 @@ static void LogFrameGraphDraw(RenderContext& context, const CommandBuffer& buffe
 	FrameGraph::SetShowBuffers(draw.index_count <= 6 || !state.depth_info.image_id);
 }
 
+// The experimental path only handles the observed full-screen 1080p/4K desktop chain.
+// Scissors were not captured in the original logs, so validate their actual runtime result.
+static bool Gt7DlssFullViewport(const CommandBuffer& buffer, uint32_t width, uint32_t height) {
+	const auto& ctx = buffer.GetRegisters();
+	const auto& vp = ctx.GetScreenViewport();
+	const auto& v = vp.viewports[0];
+	if (ctx.GetClipControl().clip_disable || vp.transform_control != 0x43f ||
+	    v.xscale != float(width) * 0.5f || v.yscale != -float(height) * 0.5f ||
+	    v.xoffset != float(width) * 0.5f || v.yoffset != float(height) * 0.5f) return false;
+	const auto scissor = calc_final_scissor(vp, ctx.GetScanModeControl(), {width, height}, 0);
+	return scissor.left == 0 && scissor.top == 0 && scissor.right == int(width) && scissor.bottom == int(height);
+}
+
+static bool Gt7DlssTextureShape(const TextureBinding& texture, uint32_t width, uint32_t height,
+                               vk::Format format) {
+	const auto& view = texture.desc.view_info;
+	return texture.image_id && texture.desc.type == TextureCache::BindingType::Texture &&
+	       texture.desc.info.extent == vk::Extent3D {width, height, 1} &&
+	       texture.desc.info.samples == 1 && view.format == format &&
+	       view.type == vk::ImageViewType::e2D && view.base_level == 0 && view.level_count == 1 &&
+	       view.base_layer == 0 && view.layer_count == 1;
+}
+
 void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buffer,
                                          const DrawCallInfo& draw, DrawRenderState& state,
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
@@ -2924,6 +2949,71 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 	auto& pipeline = *deferred_pipeline;
+	Gt7Dlss* dlss = m_context.GetGt7Dlss();
+	PipelineCache::Pipeline* dlss_effect_pipeline = nullptr;
+	bool dlss_composite = false;
+	if (dlss) {
+		const bool address_writes =
+		    (state.ps_active && state.ps_input_info.stage.program->has_address_writes) ||
+		    std::ranges::any_of(vertex_stages, [](const auto& stage) {
+			    return stage.stage.program->has_address_writes;
+		    });
+		if (writes || address_writes) dlss->CancelFrame("graphics shader writes storage or unbounded addresses");
+		const auto ps = state.ps_active ? state.ps_input_info.stage.program->shader_hash : 0;
+		const auto vs = vertex_stages.front().stage.program->shader_hash;
+		const bool direct = !mesh_active && !draw.IsIndexed() && vertex_stages.size() == 1 &&
+		    emit.gpu_args_address == 0 && emit.gpu_instance_count_address == 0 && draw.instance_count == 1 &&
+		    emit.first_vertex == 0 && emit.first_instance == 0;
+		const bool taa = ps == 0xc3113b114fb02e5dULL && vs == 0xf13bd2584bf580c0ULL;
+		if (taa) {
+			m_gt7_dlss_effects = 0;
+			dlss->CancelFrame("new temporal pass");
+			if (!writes && !address_writes && direct && bindings.pixel && !state.depth_info.image_id && draw.index_count == 4 &&
+			    topology == vk::PrimitiveTopology::eTriangleFan &&
+			    Gt7DlssFullViewport(buffer, 1920, 1080)) {
+				(void)dlss->BeginTaa(buffer, *bindings.pixel, {state.color_info, state.color_count});
+			} else {
+				dlss->CancelFrame("unsupported temporal draw", true);
+			}
+		} else if (dlss->Active()) {
+			bool writes_scene = false;
+			for (uint32_t i = 0; i < state.color_count; ++i)
+				writes_scene |= dlss->MatchesScene(state.color_info[i]);
+			if (writes_scene) {
+				bool expected = false;
+				if (direct && bindings.pixel && state.color_count == 1 && Gt7DlssFullViewport(buffer, 1920, 1080)) {
+					const auto& images = bindings.pixel->images;
+					const bool blur = m_gt7_dlss_effects == 0 && ps == 0xcdbe808cb64e4b11ULL &&
+					    vs == 0xf13bd2584bf580c0ULL && images.size() == 3 && draw.index_count == 4 &&
+					    topology == vk::PrimitiveTopology::eTriangleStrip &&
+					    Gt7DlssTextureShape(images[0],1920,1080,vk::Format::eR16G16Sfloat) &&
+					    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16B16A16Sfloat) &&
+					    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16G16Sfloat);
+					const bool overlay = m_gt7_dlss_effects == 1 && ps == 0x939a0b13ee9531c5ULL &&
+					    vs == 0xdf39fc07bb648d84ULL && draw.index_count == 30 && images.size() == 1 &&
+					    topology == vk::PrimitiveTopology::eTriangleList &&
+					    Gt7DlssTextureShape(images[0],256,384,vk::Format::eBc3UnormBlock);
+					expected = blur || overlay;
+				}
+				if (expected) {
+					dlss_effect_pipeline = m_context.GetPipelineCache().TryGetGraphicsPipeline(
+					    {state.color_info, state.color_count}, state.depth_info, vertex_stages,
+					    buffer, &state.ps_input_info, topology, primitive_restart_enable,
+					    state.programs, PipelineDefer::Never, true);
+				}
+				if (!dlss_effect_pipeline) dlss->CancelFrame("unverified scene writer or effect pipeline");
+			} else if (direct && ps == 0x939a0b13ee9531c5ULL && vs == 0xdf39fc07bb648d84ULL &&
+			           m_gt7_dlss_effects == 2 && draw.index_count == 4 && bindings.pixel &&
+			           topology == vk::PrimitiveTopology::eTriangleStrip &&
+			           bindings.pixel->images.size() == 1 && state.color_count == 1 &&
+			           !state.depth_info.image_id && !buffer.GetRegisters().GetBlendControl(0).enable &&
+			           (render_target_mask_slot(buffer.GetRegisters().GetRenderTargetMask(), 0) & 0x7u) == 0x7u &&
+		           Gt7DlssFullViewport(buffer, 3840, 2160) &&
+		           Gt7DlssDrawChecks::ValidScaleQuad(m_context, state.vertex_info[0], *bindings.pixel)) {
+				dlss_composite = true; // Helper validates source identity and destination backing before writing.
+			}
+		}
+	}
 	vk::ImageAspectFlags feedback_aspects;
 	GpuPhases::Scope     rendering_phase(GpuPhases::Phase::DrawRendering);
 	const auto rendering =
@@ -3286,6 +3376,54 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		address_writer = state.ps_input_info.stage.program->shader_hash;
 	}
 	m_context.GetBufferCache().WritesRecorded(address_writes, address_writer);
+	if (dlss_effect_pipeline && dlss->Active()) {
+		// Duplicate only the verified side-effect-free draw. The original guest target, depth,
+		// occlusion queries and bloom branch have already run normally.
+		auto* layer = dlss->EffectLayer();
+		if (layer && !rendering.depth_stencil_attachment.depth_clear &&
+		    !rendering.depth_stencil_attachment.stencil_clear) {
+			m_context.GetCommandScheduler().EndRendering();
+			if (m_gt7_dlss_effects != 0) {
+				// Separate dynamic-rendering instances do not order their blending reads.
+				// The image tracker elides repeated color-attachment access in one layout.
+				vk::MemoryBarrier2 blend_dependency {};
+				blend_dependency.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+				blend_dependency.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+				blend_dependency.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+				blend_dependency.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
+				vk::DependencyInfo dependency {};
+				dependency.memoryBarrierCount = 1;
+				dependency.pMemoryBarriers = &blend_dependency;
+				buffer.Recorder().pipelineBarrier2(dependency);
+			}
+			layer->internal_use = true;
+			layer->Transit(vk::ImageLayout::eColorAttachmentOptimal,
+			    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite,
+			    {}, buffer.Recorder());
+			ImageViewInfo view {};
+			view.format = vk::Format::eR16G16B16A16Sfloat;
+			view.type = vk::ImageViewType::e2D;
+			view.aspect = vk::ImageAspectFlagBits::eColor;
+			view.usage = vk::ImageUsageFlagBits::eColorAttachment;
+			auto effects = rendering;
+			effects.color_attachments[0] = {};
+			effects.color_attachments[0].image_view = layer->FindView(view);
+			effects.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
+			CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, *dlss_effect_pipeline, stages);
+			const auto effect_command = buffer.Recorder();
+			CommitVertexBuffers(effect_command, vertex_bindings);
+			CommitIndexBuffer(effect_command, index_binding);
+			SetGraphicsDynamicParams(buffer, effect_command, vertex_stages.back(), state.depth_info, effects);
+			m_context.GetCommandScheduler().BeginRendering(effects);
+			effect_command.bindGuestPipeline(dlss_effect_pipeline->pipeline, true);
+			EmitDrawPrimitives(ucfg, effect_command, draw, emit);
+			++m_gt7_dlss_effects;
+		} else {
+			dlss->CancelFrame("effect attachment unavailable or depth clear");
+		}
+	}
+	if (dlss_composite && dlss->Active())
+		(void)dlss->Composite(buffer, bindings.pixel->images[0], state.color_info[0]);
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 }

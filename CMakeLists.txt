@@ -454,6 +454,27 @@ foreach(shader_source IN LISTS gpu_blit_shader_sources)
 endforeach()
 list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
+# Optional GT7 desktop SR uses project-owned conversion/compositing shaders. NGX itself is
+# an explicitly loaded external backend; normal emulator builds do not link its SDK.
+set(gpu_dlss_generated_dir "${PROJECT_BINARY_DIR}/gpu_dlss_shaders")
+foreach(shader_name IN ITEMS gt7_dlss_prepare gt7_dlss_composite)
+	set(shader_source "${gpu_tiler_shader_dir}/${shader_name}.comp")
+	set(shader_spv "${gpu_dlss_generated_dir}/${shader_name}.spv")
+	set(shader_header "${gpu_dlss_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_dlss_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+		        -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}"
+		VERBATIM
+	)
+	list(APPEND kyty_emulator_src "${shader_header}")
+endforeach()
+
 # The shader disk cache's source version (src/shader_cache_version.cmake): a hash over the files
 # the shader recompiler is built from and the project headers they include, computed at build
 # time whenever one of them may have changed.
@@ -1133,9 +1154,11 @@ if(WIN32)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Start.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-LaunchSupport.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Capture-TemporalInputs.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Test-DLSS.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/Analyze-GT7-TemporalInputs.py" DESTINATION scripts)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-VR.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-DLSS-EXPERIMENT.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Kyty-MIT.txt" DESTINATION licenses)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-NOTICE.md"

@@ -15,6 +15,8 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/bisect.h"
 #include "graphics/host_gpu/renderer/commandRecorder.h"
+#include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/gt7Dlss.h"
 #include "graphics/host_gpu/renderer/drawRepeats.h"
 #include "graphics/host_gpu/renderer/frameGraph.h"
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
@@ -1489,6 +1491,37 @@ static void FillPartitionTarget(const ShaderRecompiler::IR::CompiledShaderInfo& 
 // each partition's lanes in its own dispatch; the first one also tells which partitions there are.
 // A partition whose program translates or compiles is skipped meanwhile (its lanes keep what the
 // last dispatch wrote there), as a dispatch is.
+static void CheckGt7DlssComputeWrites(RenderContext& context, const ShaderStageRuntime& runtime,
+                                     const PreparedBindings& bindings) {
+	auto* dlss = context.GetGt7Dlss();
+	if (!dlss || !dlss->Active()) return;
+	if (runtime.program->has_address_writes) {
+		dlss->CancelFrame("compute writes through unbounded addresses");
+		return;
+	}
+	for (size_t i = 0; i < bindings.images.size() && i < runtime.program->info.images.size(); ++i) {
+		if (!runtime.program->info.images[i].written) continue;
+		RenderColorInfo target {};
+		target.image_id = bindings.images[i].image_id;
+		target.desc = bindings.images[i].desc;
+		if (dlss->MatchesScene(target)) {
+			dlss->CancelFrame("compute writes the temporal scene");
+			return;
+		}
+	}
+	const auto& resources = *runtime.resources;
+	for (size_t i = 0; i < resources.buffers.size() && i < runtime.program->info.buffers.size(); ++i) {
+		if (!runtime.program->info.buffers[i].written || resources.buffers[i].dword_count < 4) continue;
+		const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
+		RenderColorInfo alias {};
+		alias.desc.info.data = {descriptor.Base48(), uint64_t(std::max<uint32_t>(descriptor.Stride(), 1u)) * descriptor.NumRecords()};
+		if (dlss->MatchesScene(alias)) {
+			dlss->CancelFrame("compute buffer aliases the temporal scene");
+			return;
+		}
+	}
+}
+
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
                                     uint32_t thread_group_z, uint32_t mode) {
@@ -1669,6 +1702,8 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		                                thread_group_x, thread_group_y, thread_group_z, mode) ||
 		     TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 		                                 thread_group_z, mode, cs_regs.cs_regs.data_addr))) {
+			// Consumed clears bypass prepared bindings and their scene-alias check.
+			if (auto* dlss = m_context.GetGt7Dlss()) dlss->CancelFrame("compute clear bypasses scene write validation");
 			if (FrameGraph::Logging()) {
 				FrameGraph::Log("  consumed as a clear: cs %016" PRIx64, program.shader_hash);
 			}
@@ -1698,6 +1733,7 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		if (fill && SparseFills() &&
 		    FillMappedParts(m_context, program.shader_hash, fill_found.address, fill_found.size,
 		                    fill_found.value)) {
+			if (auto* dlss = m_context.GetGt7Dlss()) dlss->CancelFrame("sparse fill bypasses scene write validation");
 			if (fill_found.pattern) {
 				NotePatternFill(PatternFillOutcome::MappedParts);
 			}
@@ -1775,6 +1811,7 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchTextures);
 		PrepareBindings(input_info.stage, bindings);
 	}
+	CheckGt7DlssComputeWrites(m_context, input_info.stage, bindings);
 	if (program.bindings.dispatch_thread_dword != ShaderRecompiler::IR::PushData::NoStart) {
 		std::copy(std::begin(input_info.dispatch_threads_num), std::end(input_info.dispatch_threads_num),
 		          bindings.shader_data.begin() + program.bindings.dispatch_thread_dword);
@@ -2088,6 +2125,7 @@ void RenderExecutor::DispatchIndirectPart(uint64_t submit_id, CommandBuffer& buf
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchTextures);
 		PrepareBindings(input_info.stage, bindings);
 	}
+	CheckGt7DlssComputeWrites(m_context, input_info.stage, bindings);
 	const auto& program = *input_info.stage.program;
 	FillPartitionTarget(program, partition, bindings);
 	ReportWritesOverHoles(input_info, "an indirect dispatch is not checked for a fill", nullptr,

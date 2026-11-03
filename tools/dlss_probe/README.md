@@ -52,9 +52,9 @@ verified as loaded before interpreting the absence of validation messages.
 
 The independent replay path accepts complete TAA input textures from a diagnostic
 capture. It evaluates a persistent NGX feature over consecutive captured frames,
-resetting history only on the first frame. It uses the native input size as the
-output size (DLAA), with preset K requested. It neither enables DLSS in the emulator
-nor demonstrates super-resolution performance.
+resetting history only on the first frame. It supports same-size DLAA and exactly
+2x Performance-mode SR, with preset K requested. It neither enables DLSS in the
+emulator nor demonstrates in-game performance.
 
 ```powershell
 python tools/dlss_probe/prepare_capture.py <capture-directory> <prepared-directory> `
@@ -63,9 +63,18 @@ python tools/dlss_probe/prepare_capture.py <capture-directory> <prepared-directo
   --replay <prepared-directory>/sequence.json
 ```
 
+For a genuine 1920 by 1080 capture, add `--output-width 3840 --output-height 2160`
+to the converter to evaluate 4K SR. The converter does not downsample the inputs.
+Sequence v2 records input and output dimensions separately and selects `dlaa` or
+`performance`; the replay still accepts existing same-size v1 sequences. Its
+top-level `quality` capability query is independent of the actual mode recorded
+under `replay.quality`.
+
 The converter requires NumPy. Its unit tests are in
-`tests/gt7_prepare_capture_test.py`. It rejects missing, subsampled, differently
-sized, nonconsecutive, or malformed inputs. Source R11G11B10 color is decoded to
+`tests/gt7_prepare_capture_test.py`. It rejects missing, subsampled, inconsistent,
+nonconsecutive, or malformed inputs. Constants schema 2 distinguishes the active
+input rectangle from a larger history backing allocation; the latter is validated
+but never supplied to NGX. Source R11G11B10 color is decoded to
 RGBA16F, reversed depth remains R32F, and RG16F motion is converted to RG32F
 backward pixel displacement. It preserves original resolution and records source
 metadata and assumptions in the sequence. Shader constants must belong to the

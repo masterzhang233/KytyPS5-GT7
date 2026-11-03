@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <string>
 #include <tuple>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -94,6 +95,9 @@ void ScrubDeadDescriptorViews(const vk::WriteDescriptorSet* writes, uint32_t cou
                               const char* where);
 
 struct GraphicContext {
+    bool gt7_dlss_device_enabled = false;
+    uint32_t gt7_dlss_feature_flags = 0;
+    std::vector<std::string> gt7_dlss_device_extensions;
 	vk::Instance                       instance                              = nullptr;
 	vk::DebugUtilsMessengerEXT         debug_messenger                       = nullptr;
 	// KYTY_ADDRESS_BINDING_REPORT=1: logs every GPU address range bound or unbound, so a

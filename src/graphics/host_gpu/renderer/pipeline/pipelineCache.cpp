@@ -5739,7 +5739,76 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
     std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
     std::span<const ShaderVertexInputInfo> vertex_info, CommandBuffer& command,
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
-    bool primitive_restart_enable, const GraphicsPrograms& programs, PipelineDefer defer) {
+    bool primitive_restart_enable, const GraphicsPrograms& programs, PipelineDefer defer,
+    bool premultiplied_effect_layer) {
+	if (premultiplied_effect_layer) {
+		const auto reject = [](const char* reason) -> Pipeline* {
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("GT7 effect layer: pipeline rejected (%s)\n", reason);
+			}
+			return nullptr;
+		};
+		if (colors.size() != 1 || colors[0].target_slot != 0 || vertex_info.size() != 1 ||
+		    !ps_input_info || !ps_input_info->stage || !vertex_info[0].stage ||
+		    !programs.pixel || !programs.vertex[0] || programs.VertexStageCount() != 1) {
+			return reject("requires one RT0, one vertex stage and an active pixel stage");
+		}
+		const auto ps_hash = ps_input_info->stage.program->shader_hash;
+		const auto vs_hash = vertex_info[0].stage.program->shader_hash;
+		const bool blur = ps_hash == 0xcdbe808cb64e4b11ULL && vs_hash == 0xf13bd2584bf580c0ULL;
+		const bool overlay = ps_hash == 0x939a0b13ee9531c5ULL && vs_hash == 0xdf39fc07bb648d84ULL;
+		if ((!blur && !overlay) || programs.pixel.hash != ps_hash ||
+		    programs.vertex[0].hash != vs_hash) {
+			return reject("unverified shader pair");
+		}
+		const auto& color = colors[0];
+		const auto& ps = *ps_input_info;
+		// Both decoded shaders export compressed FP16 RGBA, including their straight alpha.
+		// B10G11R11 discards stored alpha, not the shader alpha used by RGB blending. Identity
+		// mapping therefore allows the same module to store that alpha in the private target.
+		// Reject remapped/dual-source modules; changing only their attachment would be wrong.
+		if (!color.image_id || color.desc.view_info.format != vk::Format::eB10G11R11UfloatPack32 ||
+		    color.desc.info.samples != 1 || color.desc.view_info.layer_count != 1 ||
+		    !color.export_mapping.IsIdentity() || !ps.target_export_mapping[0].IsIdentity() ||
+		    ps.target_output_mode[0] != 4 || ps.target_uint_mask != 0 || ps.target_sint_mask != 0 ||
+		    ps.dual_source_blending || ps.alpha_blend_source != ShaderAlphaBlendSource::None ||
+		    ps.ps_depth_export_enable || ps.ps_sample_mask_export_enable) {
+			return reject("incompatible attachment or RGBA export");
+		}
+		const auto writes_memory = [](const ShaderStageRuntime& runtime) {
+			const auto& program = *runtime.program;
+			return program.has_address_writes ||
+			       std::ranges::any_of(program.info.buffers, [](const auto& b) { return b.written; }) ||
+			       std::ranges::any_of(program.info.images, [](const auto& i) { return i.written; }) ||
+			       std::ranges::any_of(program.bindings.descriptors, [](const auto& b) {
+				       return b.kind == ShaderRecompiler::IR::DescriptorBindingKind::Gds;
+			       });
+		};
+		if (writes_memory(ps.stage) || writes_memory(vertex_info[0].stage) || depth.unsupported ||
+		    depth.depth_write_enable || depth.depth_clear_enable || depth.depth_load_clear_enable ||
+		    depth.stencil_clear_enable || depth.stencil_test_enable || depth.depth_bounds_test_enable ||
+		    (blur && depth.image_id) ||
+		    (overlay && (!depth.image_id || !depth.depth_test_enable ||
+		                 depth.depth_compare_op != vk::CompareOp::eGreaterOrEqual ||
+		                 depth.desc.info.samples != 1 || depth.desc.view_info.layer_count != 1))) {
+			return reject("side effects or unverified depth state");
+		}
+		const auto& ctx = command.GetRegisters();
+		const auto& bc = ctx.GetBlendControl(0);
+		using Factor = Prospero::BlendFactor;
+		const auto add = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
+		if (!bc.enable || ctx.GetRenderTarget(0).info.blend_bypass || !bc.separate_alpha_blend ||
+		    bc.color_srcblend != static_cast<uint8_t>(Factor::kSrcAlpha) ||
+		    bc.color_destblend != static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) ||
+		    bc.alpha_srcblend != static_cast<uint8_t>(Factor::kOne) ||
+		    bc.alpha_destblend != static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) ||
+		    bc.color_comb_fcn != add || bc.alpha_comb_fcn != add ||
+		    render_target_mask_slot(ctx.GetRenderTargetMask(), 0) != 0xf ||
+		    ctx.GetShaderRegisters().AlphaToMask()) {
+			return reject("unverified blend, channel mask or coverage state");
+		}
+	}
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
@@ -5840,6 +5909,22 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 				static_params.alpha_destblend[slot] = blend.alpha_destblend;
 			}
 		}
+	}
+	if (premultiplied_effect_layer) {
+		// Transparent clear + straight-source RGB over stores P = a*C + (1-a)*Pprev,
+		// A = a + (1-a)*Aprev. The later composite is P + (1-A)*base, never P*A.
+		// The rendering format is part of GraphicsPipelineKey, so the guest B10G11R11
+		// pipeline is neither reused for this attachment nor modified by this request.
+		rendering.color_formats[0] = vk::Format::eR16G16B16A16Sfloat;
+		static_params.color_mask[0] = 0xf;
+		static_params.blend_enable[0] = true;
+		static_params.color_srcblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kSrcAlpha);
+		static_params.color_destblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha);
+		static_params.color_comb_fcn[0] = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
+		static_params.separate_alpha_blend[0] = true;
+		static_params.alpha_srcblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOne);
+		static_params.alpha_destblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha);
+		static_params.alpha_comb_fcn[0] = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
 	}
 	const bool with_depth =
 	    depth.desc.view_info.format != vk::Format::eUndefined && static_cast<bool>(depth.image_id);

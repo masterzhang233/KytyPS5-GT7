@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a GT7 TAA capture and prepare native-size experimental NGX replay inputs.
+"""Validate a GT7 TAA capture and prepare experimental native or 2x NGX replay inputs.
 
 Requires NumPy. This is an offline format/convention conversion, not a DLSS game
 integration, motion-vector validity repair, or a super-resolution benchmark.
@@ -65,6 +65,72 @@ def vector(value: object, count: int, label: str) -> np.ndarray:
 def close(actual: np.ndarray, expected: np.ndarray, label: str) -> None:
     require(bool(np.allclose(actual, expected, rtol=2e-7, atol=1e-10)),
             f"{label}: disagrees with captured constants ({actual} vs {expected})")
+
+
+def extent(value: object, label: str) -> tuple[int, int]:
+    require(isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(n) is int and 64 <= n <= 4096 for n in value),
+            f"{label}: expected two integer dimensions in 64..4096")
+    return tuple(value)
+
+
+def output_quality(input_extent: tuple[int, int], output_extent: tuple[int, int]) -> str:
+    output_extent = extent(output_extent, "output extent")
+    if output_extent == input_extent:
+        return "dlaa"
+    require(output_extent == tuple(2 * n for n in input_extent),
+            "output ratio must be identical dimensions (DLAA) or exactly 2x on both axes (Performance)")
+    return "performance"
+
+
+def validate_schema2_frame(frame: dict, group: dict, values: np.ndarray,
+                           width: int, height: int) -> tuple[int, int]:
+    """Keep active render pixels distinct from a larger physical history backing."""
+    active = (width, height)
+    rect = frame["input_active_rectangle"]
+    require(isinstance(rect, dict) and all(type(rect.get(k)) is int for k in ("x", "y", "width", "height"))
+            and [rect["x"], rect["y"], rect["width"], rect["height"]] == [0, 0, width, height],
+            "input active rectangle must start at (0,0) and equal the input extent")
+    history_extent = (group[3]["width"], group[3]["height"])
+    require(extent(frame["history_backing_extent"], "history backing extent") == history_extent,
+            "history backing extent does not match the captured raw allocation")
+    require(extent(frame["history_active_extent"], "history active extent") == active,
+            "history active extent must equal the input extent")
+    require(width <= history_extent[0] and height <= history_extent[1],
+            "history active rectangle exceeds the captured backing")
+    require(extent(frame["guest_taa_rt1_extent"], "guest TAA RT1 extent") == active,
+            "guest TAA RT1 extent does not match input")
+    close(vector(frame["history_coordinate_scale"], 2, "history scale"), values[18:20], "history scale cb72/76")
+    close(values[18:20], np.ones(2), "supported history coordinate scale")
+    close(vector(frame["history_coordinate_offset"], 2, "history offset"), values[24:26], "history offset cb96/100")
+    close(values[24:26], np.zeros(2), "supported history coordinate offset")
+    # The schema2 extraction carries the actual logged texture and RT descriptors,
+    # so a physically larger history cannot silently substitute its size for W/H.
+    textures = frame["textures"]
+    require(isinstance(textures, list) and len(textures) == 4
+            and sorted(t["slot"] for t in textures) == [0, 1, 2, 3],
+            "schema2 requires exactly four texture descriptors")
+    for texture in textures:
+        raw = group[texture["slot"]]
+        expected_format = [100, 83, 122, 97][texture["slot"]]
+        require(texture["extent"] == [raw["width"], raw["height"], 1],
+                "schema2 texture extent disagrees with raw metadata")
+        require(int(texture["address"], 16) == raw["meta"]["guest"]["address"],
+                "schema2 texture address disagrees with raw metadata")
+        allowed_formats = (100, 126, 130) if texture["slot"] == 0 else (expected_format,)
+        require(texture["format"] in allowed_formats, "schema2 texture format disagrees with input slot")
+    targets = frame["render_targets"]
+    require(isinstance(targets, list) and len(targets) == 2
+            and sorted(t["slot"] for t in targets) == [0, 1],
+            "schema2 requires both TAA render targets")
+    for target in targets:
+        expected_extent = history_extent if target["slot"] == 0 else active
+        require(extent(target["extent"], "TAA target extent") == expected_extent
+                and target["format"] == (97 if target["slot"] == 0 else 122),
+                "schema2 TAA target extent/format mismatch")
+    requested = extent([frame["output_width"], frame["output_height"]], "constants requested output extent")
+    output_quality(active, requested)
+    return requested
 
 
 def unsigned_float_table(mantissa_bits: int) -> np.ndarray:
@@ -157,7 +223,9 @@ def validate_raw(meta_path: Path, meta: dict, slot: int) -> dict:
 
 def collect_inputs(capture_dir: Path, constants_path: Path) -> tuple[dict, list[dict]]:
     constants = read_json(constants_path)
-    require(constants.get("schema") == 1, "unsupported constants schema")
+    require(type(constants.get("schema")) is int and constants["schema"] in (1, 2),
+            "unsupported constants schema")
+    schema2 = constants["schema"] == 2
     require(os.path.normcase(str(Path(constants["source_capture"]).resolve())) ==
             os.path.normcase(str(capture_dir.resolve())), "constants source_capture does not match capture directory")
     require(constants["source_shader_hashes"]["taa"] == TAA_SHADER, "constants use a different TAA shader")
@@ -183,12 +251,13 @@ def collect_inputs(capture_dir: Path, constants_path: Path) -> tuple[dict, list[
     require(isinstance(frames, list) and len(frames) == len(captures), "constant/capture frame count mismatch")
     frame_map = {frame["capture"]: frame for frame in frames}
     require(len(frame_map) == len(frames) and sorted(frame_map) == captures, "constant/capture identifiers mismatch")
-    prepared, dimensions = [], None
+    prepared, dimensions, requested_output = [], None, None
     for capture in captures:
         group, frame = groups[capture], frame_map[capture]
         require(set(group) == set(EXPECTED), f"capture {capture}: missing TAA inputs (need slots 0,1,2,3)")
         width, height = group[0]["width"], group[0]["height"]
-        require(all((r["width"], r["height"]) == (width, height) for r in group.values()),
+        equal_slots = (0, 1, 2) if schema2 else (0, 1, 2, 3)
+        require(all((group[s]["width"], group[s]["height"]) == (width, height) for s in equal_slots),
                 f"capture {capture}: input dimensions disagree")
         dimensions = dimensions or (width, height)
         require(dimensions == (width, height), "resolution changes across captures are unsupported")
@@ -209,7 +278,12 @@ def collect_inputs(capture_dir: Path, constants_path: Path) -> tuple[dict, list[
         close(values[16:18], np.array([width, height]), "constant image dimensions")
         d = np.array([width / 2.0, -height / 2.0])
         close(values[14:16], d, "constant NDC scale")
-        close(vector(frame["ndc_to_pixel"], 2, "ndc_to_pixel"), d, "NDC scale")
+        scale_key = "ndc_to_input_pixel" if schema2 else "ndc_to_pixel"
+        close(vector(frame[scale_key], 2, scale_key), d, "NDC scale")
+        if schema2:
+            requested = validate_schema2_frame(frame, group, values, width, height)
+            requested_output = requested_output or requested
+            require(requested_output == requested, "constants output extent changes across frames")
         j = vector(frame["jitter_ndc"], 2, "jitter_ndc")
         close(j, values[20:22], "jitter constant")
         close(vector(frame["motion_add_ndc"], 2, "motion_add_ndc"), j, "motion correction")
@@ -218,7 +292,10 @@ def collect_inputs(capture_dir: Path, constants_path: Path) -> tuple[dict, list[
         close(jitter_pixels, -d * j, "projection jitter pixel sign/scale")
         prepared.append({"capture": capture, "op": frame["op"], "inputs": group,
                          "width": width, "height": height, "jitter_ndc": j,
-                         "jitter_pixels": jitter_pixels})
+                         "jitter_pixels": jitter_pixels,
+                         "history_backing_extent": [group[3]["width"], group[3]["height"]],
+                         "history_active_extent": [width, height],
+                         "constants_requested_output": requested_output})
     return constants, prepared
 
 
@@ -227,27 +304,38 @@ def map_input(raw: dict, dtype: str, channels: int = 1) -> np.memmap:
     return np.memmap(raw["binary"], dtype=dtype, mode="r", shape=shape)
 
 
-def prepare_capture(capture_dir: Path, output_dir: Path, constants_path: Path) -> dict:
+def prepare_capture(capture_dir: Path, output_dir: Path, constants_path: Path,
+                    output_width: int | None = None, output_height: int | None = None) -> dict:
     capture_dir, output_dir, constants_path = (p.resolve() for p in (capture_dir, output_dir, constants_path))
     constants, frames = collect_inputs(capture_dir, constants_path)
+    require((output_width is None) == (output_height is None),
+            "specify both output width and output height, or neither")
+    input_extent = (frames[0]["width"], frames[0]["height"])
+    output_extent = input_extent if output_width is None else (output_width, output_height)
+    quality = output_quality(input_extent, output_extent)
     require(not output_dir.exists() or (output_dir.is_dir() and not any(output_dir.iterdir())),
             "output directory must be new or empty; existing replay files will not be overwritten")
     output_dir.mkdir(parents=True, exist_ok=True)
     sequence = {
-        "schema": "gt7.ngx-replay.v1", "width": frames[0]["width"], "height": frames[0]["height"],
+        "schema": "gt7.ngx-replay.v2", "width": input_extent[0], "height": input_extent[1],
+        "output_width": output_extent[0], "output_height": output_extent[1], "quality": quality,
         "source_capture": str(capture_dir), "constants_source": str(constants_path),
-        "constants_sha256": sha256(constants_path), "mode": "native-size experimental DLAA",
-        "assumptions": ["No downsampling; input and output dimensions are identical.",
+        "constants_schema": constants["schema"], "constants_sha256": sha256(constants_path),
+        "constants_requested_output": frames[0]["constants_requested_output"],
+        "mode": "native-size experimental DLAA" if quality == "dlaa" else "2x experimental DLSS SR",
+        "assumptions": ["Captured inputs retain their actual render dimensions; no CPU resize or downsampling.",
                         "Depth remains reverse-Z float32; no linearization or inversion.",
                         "Color retains captured HDR values without exposure or gamma conversion; alpha is 1.",
+                        "Motion and jitter use active input-render pixels, never output or history-backing pixels.",
                         "Motion is current-to-previous pixel displacement after removing current projection jitter.",
                         "Frame time is assumed 16.6667 ms; actual frame timings were not captured.",
                         "NGX jitter uses the actual projection pixel shift (-width/2*J.x, +height/2*J.y)."],
-        "limitations": ["This is offline native DLAA experimentation, not an in-game DLSS integration or FPS result.",
+        "limitations": ["This is offline DLAA/SR experimentation, not an in-game DLSS integration or FPS result.",
                         "Invalid motion (M.x < -1000) becomes numeric zero only as an untrusted placeholder.",
                         "bias.r8 is an independent invalid mask (255 invalid, 0 otherwise), not supplied to preset K.",
                         "Invalid regions are not quality validated; the mask does not repair motion or cause NGX rejection.",
-                        "The game's previous history input is validated but not supplied as current NGX color.",
+                        "The game's entire previous history backing is validated; only its recorded active region is meaningful, and it is not supplied to NGX.",
+                        "CLI output dimensions select the experiment; constants requested output dimensions describe the source extraction, not a guest output allocation.",
                         "Initial NGX history must be reset; exposure, disocclusion and per-material motion need visual validation."],
         "source_convention": constants.get("convention", {}), "frames": []}
     for frame in frames:
@@ -269,6 +357,9 @@ def prepare_capture(capture_dir: Path, output_dir: Path, constants_path: Path) -
         output_frame = {"capture": frame["capture"], "source_op": frame["op"],
                         **names,
                         "jitter": frame["jitter_pixels"].tolist(),
+                        "input_active_rectangle": {"x": 0, "y": 0, "width": width, "height": height},
+                        "history_backing_extent": frame["history_backing_extent"],
+                        "history_active_extent": frame["history_active_extent"],
                         "invalid_motion_pixels": int(np.count_nonzero(bias)), "frame_time_ms": 16.6667,
                         "sources": {str(slot): {"metadata": str(raw["metadata"]),
                                                 "metadata_sha256": sha256(raw["metadata"]),
@@ -287,13 +378,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("capture_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--constants", required=True, type=Path)
+    parser.add_argument("--output-width", type=int)
+    parser.add_argument("--output-height", type=int)
     args = parser.parse_args(argv)
     try:
-        result = prepare_capture(args.capture_dir, args.output_dir, args.constants)
+        result = prepare_capture(args.capture_dir, args.output_dir, args.constants,
+                                 args.output_width, args.output_height)
     except (CaptureError, OSError, KeyError, TypeError, ValueError) as exc:
         print(f"Capture preparation failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Prepared {len(result['frames'])} native {result['width']}x{result['height']} frames: "
+    print(f"Prepared {len(result['frames'])} {result['width']}x{result['height']} -> "
+          f"{result['output_width']}x{result['output_height']} {result['quality']} frames: "
           f"{args.output_dir.resolve() / 'sequence.json'}")
     return 0
 

@@ -1,0 +1,22 @@
+#version 450
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(binding=0) uniform sampler2D source_color;
+layout(binding=1) uniform sampler2D source_depth;
+layout(binding=2) uniform sampler2D source_motion;
+layout(binding=3, rgba16f) uniform writeonly image2D output_color;
+layout(binding=4, r32f) uniform writeonly image2D output_depth;
+layout(binding=5, rg32f) uniform writeonly image2D output_motion;
+layout(binding=6, r8) uniform writeonly image2D output_invalid;
+layout(push_constant) uniform Push { uint width; uint height; float jitter_x; float jitter_y; } pc;
+void main() {
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy);
+    if(p.x>=pc.width || p.y>=pc.height) return;
+    vec2 motion=texelFetch(source_motion,p,0).rg;
+    bool invalid=motion.x < -1000.0 || any(isnan(motion)) || any(isinf(motion));
+    precise vec2 clean=motion+vec2(pc.jitter_x,pc.jitter_y);
+    precise vec2 backward=clean*vec2(-0.5*float(pc.width),0.5*float(pc.height));
+    imageStore(output_color,p,vec4(texelFetch(source_color,p,0).rgb,1.0));
+    imageStore(output_depth,p,vec4(texelFetch(source_depth,p,0).r));
+    imageStore(output_motion,p,vec4(invalid ? vec2(0.0) : backward,0.0,0.0));
+    imageStore(output_invalid,p,vec4(invalid ? 1.0 : 0.0));
+}

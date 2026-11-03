@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/commandRecorder.h"
 #include "graphics/host_gpu/renderer/frameGraph.h"
 #include "graphics/host_gpu/renderer/gpuTiming.h"
+#include "graphics/host_gpu/renderer/gt7Dlss.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/rendererLock.h"
@@ -1243,6 +1244,9 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	}
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
+	// End an incomplete private sequence on the GPU recording thread. The separate
+	// presentation thread's frame counter is not a boundary for recorded commands.
+	if (auto* dlss = m_impl->renderer.GetGt7Dlss()) dlss->FrameBoundary();
 	auto& image = m_impl->ResolveSurface(info);
 	constexpr uint32_t presented_layer = 0; // Match the existing desktop CopyFrom layer.
 	if (image.backing.format == vk::Format::eUndefined) {
@@ -1364,6 +1368,7 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 	clear.float32[3] = opaque ? 1.0f : 0.0f;
 	if (producer != nullptr) {
 		EXIT_IF(producer->IsInvalid());
+		if (auto* dlss = m_impl->renderer.GetGt7Dlss()) dlss->FrameBoundary();
 		frame->Clear(*producer, clear);
 	} else {
 		auto& command = m_impl->present_scheduler.BeginCommand();

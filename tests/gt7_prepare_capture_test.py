@@ -95,7 +95,8 @@ class CaptureTests(unittest.TestCase):
                     "payload_bytes": data.nbytes,
                     "host": {"width": 64, "height": 64, "depth": 1, "layers": 1, "mips": 1,
                              "vk_format": [130, 83, 122, 97][slot]},
-                    "guest": {"width": 64, "height": 64, "depth": 1},
+                    "guest": {"width": 64, "height": 64, "depth": 1,
+                              "address": 0x1200000000 + slot * 0x1000000},
                     "selection": {"complete_selected_mip_aspect": True, "complete_texture": slot != 0,
                                   "mip": 0, "source_x_step": 1, "source_y_step": 1,
                                   "source_x_start": 0, "source_y_start": 0,
@@ -140,9 +141,46 @@ class CaptureTests(unittest.TestCase):
     def collect(self):
         return prepare.collect_inputs(self.capture, self.constants_path)
 
+    def make_schema2(self):
+        self.constants["schema"] = 2
+        for frame in self.constants["frames"]:
+            capture = frame["capture"]
+            path = self.metadata[capture, 3]
+            meta = json.loads(path.read_text())
+            history = np.full((128, 128, 4), 0.25, dtype="<f2")
+            history.tofile(self.images / meta["binary_file"])
+            meta["host"].update(width=128, height=128)
+            meta["guest"].update(width=128, height=128)
+            meta["selection"].update(source_width=128, source_height=128, rows=128)
+            meta["storage"].update(width=128, height=128, row_pitch=128 * 8, tile_pitch=history.nbytes)
+            meta["payload_bytes"] = history.nbytes
+            self.write_json(path, meta)
+            frame["ndc_to_input_pixel"] = frame.pop("ndc_to_pixel")
+            frame.update(history_active_extent=[64, 64], history_backing_extent=[128, 128],
+                         input_active_rectangle={"x": 0, "y": 0, "width": 64, "height": 64},
+                         guest_taa_rt1_extent=[64, 64], output_width=128, output_height=128,
+                         history_coordinate_scale=[1, 1], history_coordinate_offset=[0, 0])
+            frame["textures"] = []
+            for slot in range(4):
+                raw = json.loads(self.metadata[capture, slot].read_text())
+                frame["textures"].append({"slot": slot, "address": hex(raw["guest"]["address"]),
+                                          "extent": [raw["host"]["width"], raw["host"]["height"], 1],
+                                          "format": [100, 83, 122, 97][slot]})
+            frame["render_targets"] = [{"slot": 0, "extent": [128, 128], "format": 97},
+                                        {"slot": 1, "extent": [64, 64], "format": 122}]
+        self.write_json(self.constants_path, self.constants)
+
+    @staticmethod
+    def change_constant(frame, index, value):
+        frame["taa_constants"]["float_values"][index] = value
+        frame["taa_constants"]["words_hex"][index] = f"{struct.unpack('<I', struct.pack('<f', value))[0]:08x}"
+
     def test_complete_native_sequence_and_source_hashes(self):
         sequence = prepare.prepare_capture(self.capture, self.output, self.constants_path)
-        self.assertEqual(sequence["schema"], "gt7.ngx-replay.v1")
+        self.assertEqual(sequence["schema"], "gt7.ngx-replay.v2")
+        self.assertEqual((sequence["width"], sequence["height"], sequence["output_width"], sequence["output_height"]),
+                         (64, 64, 64, 64))
+        self.assertEqual(sequence["quality"], "dlaa")
         self.assertEqual([f["capture"] for f in sequence["frames"]], [1, 2])
         frame = sequence["frames"][0]
         self.assertEqual(frame["invalid_motion_pixels"], 1)
@@ -229,6 +267,90 @@ class CaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(prepare.CaptureError, "new or empty"):
             prepare.prepare_capture(self.capture, self.output, self.constants_path)
         self.assertEqual(marker.read_bytes(), b"keep")
+
+    def test_schema2_large_history_keeps_motion_and_files_in_input_pixels(self):
+        self.make_schema2()
+        path = self.images / "cap1_op101_t1.bin"
+        motion = np.fromfile(path, dtype="<f2").reshape(64, 64, 2)
+        motion[0, 0] = [0.375, -0.25]
+        motion.tofile(path)
+        result = prepare.prepare_capture(self.capture, self.output, self.constants_path, 128, 128)
+        self.assertEqual(result["quality"], "performance")
+        self.assertEqual((result["width"], result["output_width"]), (64, 128))
+        frame = result["frames"][0]
+        self.assertEqual(frame["history_backing_extent"], [128, 128])
+        self.assertEqual(frame["history_active_extent"], [64, 64])
+        self.assertEqual(frame["jitter"], [-4, -8])
+        self.assertEqual((self.output / frame["color"]).stat().st_size, 64 * 64 * 8)
+        converted = np.fromfile(self.output / frame["motion"], dtype="<f4").reshape(64, 64, 2)
+        np.testing.assert_array_equal(converted[0, 0], [-16, -16])
+
+    def test_schema2_default_output_is_input_not_history_or_requested_extent(self):
+        self.make_schema2()
+        result = prepare.prepare_capture(self.capture, self.output, self.constants_path)
+        self.assertEqual((result["output_width"], result["output_height"]), (64, 64))
+        self.assertEqual(result["constants_requested_output"], (128, 128))
+        self.assertEqual(result["quality"], "dlaa")
+
+    def test_schema2_inconsistent_rect_backing_texture_and_targets_rejected(self):
+        self.make_schema2()
+        original = json.dumps(self.constants)
+        changes = [lambda f: f["input_active_rectangle"].update(x=1),
+                   lambda f: f["input_active_rectangle"].update(width=129),
+                   lambda f: f.update(history_active_extent=[128, 128]),
+                   lambda f: f.update(history_backing_extent=[256, 128]),
+                   lambda f: f.update(guest_taa_rt1_extent=[128, 128]),
+                   lambda f: f["textures"][0].update(extent=[128, 128, 1]),
+                   lambda f: f["textures"][1].update(address="0x1234560000"),
+                   lambda f: f["render_targets"][0].update(extent=[64, 64]),
+                   lambda f: f["render_targets"][1].update(format=97)]
+        for change in changes:
+            with self.subTest(change=change):
+                self.constants = json.loads(original)
+                change(self.constants["frames"][0])
+                self.write_json(self.constants_path, self.constants)
+                with self.assertRaises(prepare.CaptureError):
+                    self.collect()
+
+    def test_schema2_wrong_cb56_64_72_96_rejected(self):
+        self.make_schema2()
+        original = json.dumps(self.constants)
+        for index, value in ((14, 64), (16, 128), (18, 0.5), (24, 1)):
+            with self.subTest(offset=index * 4):
+                self.constants = json.loads(original)
+                frame = self.constants["frames"][0]
+                self.change_constant(frame, index, value)
+                # Even a consistently edited derived field cannot make backing-
+                # based scaling or shifted history supported by this converter.
+                if index == 18:
+                    frame["history_coordinate_scale"][0] = value
+                if index == 24:
+                    frame["history_coordinate_offset"][0] = value
+                self.write_json(self.constants_path, self.constants)
+                with self.assertRaises(prepare.CaptureError):
+                    self.collect()
+
+    def test_wrong_output_ratio_partial_dimensions_and_constants_target_rejected(self):
+        self.make_schema2()
+        for width, height in ((96, 96), (128, 64), (63, 64), (128, None)):
+            with self.subTest(width=width, height=height):
+                with self.assertRaises(prepare.CaptureError):
+                    prepare.prepare_capture(self.capture, self.output, self.constants_path, width, height)
+                self.assertFalse(self.output.exists())
+        self.constants["frames"][0]["output_width"] = 96
+        self.write_json(self.constants_path, self.constants)
+        with self.assertRaisesRegex(prepare.CaptureError, "output ratio"):
+            self.collect()
+
+    def test_history_full_backing_is_validated_including_unused_region(self):
+        self.make_schema2()
+        path = self.images / "cap1_op101_t3.bin"
+        data = np.fromfile(path, dtype="<f2").reshape(128, 128, 4)
+        data[-1, -1, 0] = np.nan
+        data.tofile(path)
+        with self.assertRaisesRegex(prepare.CaptureError, "nonfinite"):
+            prepare.prepare_capture(self.capture, self.output, self.constants_path, 128, 128)
+        self.assertFalse((self.output / "sequence.json").exists())
 
 
 if __name__ == "__main__":

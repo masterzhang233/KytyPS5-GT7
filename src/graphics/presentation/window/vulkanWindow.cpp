@@ -12,6 +12,7 @@
 #include "common/timer.h"
 #include "graphics/host_gpu/aftermath.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/gt7DlssDevice.h"
 #include "graphics/host_gpu/renderer/pipeline/spirvMeshTest.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -914,6 +915,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
 	create_info.ppEnabledExtensionNames = device_extensions.data();
 	create_info.pEnabledFeatures        = &device_features;
+	if (graphics.gt7_dlss_device_enabled) {
+		// RG32F motion and the private R8 invalid-region mask are storage images.
+		device_features.shaderStorageImageExtendedFormats =
+		    supported_features2.features.shaderStorageImageExtendedFormats;
+		graphics.gt7_dlss_feature_flags =
+		    (features12.bufferDeviceAddress ? KYTY_DLSS_FEATURE_BUFFER_DEVICE_ADDRESS : 0u) |
+		    (device_features.shaderInt64 ? KYTY_DLSS_FEATURE_SHADER_INT64 : 0u);
+		graphics.gt7_dlss_device_enabled = graphics.gt7_dlss_feature_flags ==
+		    (KYTY_DLSS_FEATURE_BUFFER_DEVICE_ADDRESS | KYTY_DLSS_FEATURE_SHADER_INT64) &&
+		    device_features.shaderStorageImageExtendedFormats;
+	}
 
 	vk::Device device = nullptr;
 
@@ -1172,6 +1184,7 @@ void WindowContext::CreateVulkan() {
 	VulkanExtensions r;
 	VulkanGetExtensions(r);
 	VulkanCheckInstanceVersion();
+	Gt7DlssHost::AddInstanceExtensions(r.required_extensions, r.available_extensions);
 	std::vector<std::string> vr_instance_extensions;
 	std::vector<std::string> vr_device_extensions;
 	if (Config::VrEnabled()) {
@@ -1512,6 +1525,7 @@ void WindowContext::CreateVulkan() {
 		}
 	}
 
+	Gt7DlssHost::AddDeviceExtensions(graphic_ctx, device_extensions);
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
 	if (graphic_ctx.device == nullptr) {
 		EXIT("Could not create device");

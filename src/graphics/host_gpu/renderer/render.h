@@ -414,6 +414,8 @@ private:
 	// entry); an entry is rewritten only after the ring has gone round, behind its last read.
 	std::unique_ptr<Buffer>                 m_mesh_indirect;
 	uint32_t                                m_mesh_indirect_next = 0;
+	// Experimental GT7 chain: one verified blur draw followed by one verified overlay draw.
+	uint32_t m_gt7_dlss_effects = 0;
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

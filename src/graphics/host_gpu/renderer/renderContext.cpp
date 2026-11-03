@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/gt7Dlss.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -263,6 +264,7 @@ RenderContext::RenderContext(GraphicContext& graphics)
 RenderContext::~RenderContext() {
 	FaultPages::Stop();
 	ShutdownGpu();
+	m_gt7_dlss.reset(); // ShutdownGpu finished the scheduler's work before NGX/images are released.
 	m_command_scheduler.Shutdown();
 	// Round 111: the page manager's worker is idle before the staging buffer its upload reads
 	// write into goes (the buffer cache, after the page manager), and the page manager goes
@@ -273,6 +275,12 @@ RenderContext::~RenderContext() {
 	BufferAddressLog::Stop();
 	FrameGraphQueries::Shutdown();
 	OcclusionQueries::Shutdown();
+}
+
+Gt7Dlss* RenderContext::GetGt7Dlss() {
+	if (!m_graphics.gt7_dlss_device_enabled) return nullptr;
+	if (!m_gt7_dlss) m_gt7_dlss = std::make_unique<Gt7Dlss>(*this);
+	return m_gt7_dlss.get();
 }
 
 void WarmUpLocalMemory(GraphicContext& graphics, CommandScheduler& scheduler);

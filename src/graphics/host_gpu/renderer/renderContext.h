@@ -29,6 +29,7 @@ class VideoOutDriver;
 namespace Libs::Graphics {
 
 class GuestGpu;
+class Gt7Dlss;
 
 class RenderContext {
 public:
@@ -51,6 +52,7 @@ public:
 	TextureCache&       GetTextureCache() { return m_texture_cache; }
 	BindlessTable&      GetBindlessTable() { return m_bindless_table; }
 	RenderExecutor&     GetRenderExecutor() { return m_render_executor; }
+	Gt7Dlss*            GetGt7Dlss();
 
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 	// Any thread: a read of these bytes faulted on a page protected because the GPU wrote to it,
@@ -134,6 +136,7 @@ private:
 	size_t                    m_map_events_next  = 0;
 	uint64_t                  m_map_events_total = 0;
 	std::unique_ptr<GuestGpu> m_gpu;
+	std::unique_ptr<Gt7Dlss> m_gt7_dlss;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;
 	bool                      m_bda_logged = false;

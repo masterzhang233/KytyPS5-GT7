@@ -1,16 +1,28 @@
 // Included in the standalone probe's private namespace. Never linked into the emulator.
-// Same-resolution real capture replay validates GPU plumbing, not SR performance or quality.
+// Real capture replay validates GPU plumbing, not in-game SR performance or quality.
 std::filesystem::path ReplayPath(const std::string& utf8) {
     return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
 
+unsigned ReplayOutputDimension(const Json& sequence, const char* input_key, const char* output_key) {
+    return sequence.at(sequence.at("schema") == "gt7.ngx-replay.v1" ? input_key : output_key).get<unsigned>();
+}
+
 void ValidateReplay(const Json& sequence) {
-    if (sequence.at("schema") != "gt7.ngx-replay.v1")
+    if (sequence.at("schema") != "gt7.ngx-replay.v1" && sequence.at("schema") != "gt7.ngx-replay.v2")
         throw std::runtime_error("Unsupported replay sequence schema");
     const auto width = sequence.at("width").get<unsigned>();
     const auto height = sequence.at("height").get<unsigned>();
     if (width < 64 || height < 64 || width > 4096 || height > 4096)
         throw std::runtime_error("Replay dimensions must be between 64 and 4096");
+    const auto output_width = ReplayOutputDimension(sequence, "width", "output_width");
+    const auto output_height = ReplayOutputDimension(sequence, "height", "output_height");
+    if (output_width < 64 || output_height < 64 || output_width > 4096 || output_height > 4096)
+        throw std::runtime_error("Replay output dimensions must be between 64 and 4096");
+    const auto quality = sequence.at("schema") == "gt7.ngx-replay.v1" ? "dlaa" : sequence.at("quality").get<std::string>();
+    if (!((quality == "dlaa" && width == output_width && height == output_height) ||
+          (quality == "performance" && width * 2 == output_width && height * 2 == output_height)))
+        throw std::runtime_error("Replay supports same-size DLAA or exactly 2x Performance SR");
     const auto& frames = sequence.at("frames");
     if (!frames.is_array() || frames.size() < 2 || frames.size() > 8)
         throw std::runtime_error("Replay requires 2 to 8 consecutive captured frames");
@@ -57,9 +69,14 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
     const auto width = sequence.at("width").get<unsigned>();
     const auto height = sequence.at("height").get<unsigned>();
     const size_t pixels = size_t(width) * height;
+    const auto output_width = ReplayOutputDimension(sequence, "width", "output_width");
+    const auto output_height = ReplayOutputDimension(sequence, "height", "output_height");
+    const size_t output_pixels = size_t(output_width) * output_height;
+    const bool upscale = output_width != width;
     report["replay"] = {
-        {"mode", "native-resolution DLAA diagnostic; no upscaling"},
-        {"input", {width, height}}, {"output", {width, height}},
+        {"mode", upscale ? "2x DLSS SR offline diagnostic" : "native-resolution DLAA diagnostic; no upscaling"},
+        {"quality", upscale ? "performance" : "dlaa"},
+        {"input", {width, height}}, {"output", {output_width, output_height}},
         {"gt7_data_used", true}, {"gt7_integration_tested", false},
         {"temporal_quality_verified", false}, {"performance_verified", false},
         {"requested_preset", "K"}, {"effective_preset_verified", false},
@@ -84,18 +101,19 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
     gpu.MakeImage(gpu.images[0], width, height, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     gpu.MakeImage(gpu.images[1], width, height, VK_FORMAT_R32_SFLOAT, false);
     gpu.MakeImage(gpu.images[2], width, height, VK_FORMAT_R32G32_SFLOAT, false);
-    gpu.MakeImage(gpu.images[3], width, height, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+    gpu.MakeImage(gpu.images[3], output_width, output_height, VK_FORMAT_R16G16B16A16_SFLOAT, true);
     const std::array<VkDeviceSize, 4> offsets {0, pixels * 8, pixels * 12, pixels * 20};
     const std::array<size_t, 4> sizes {pixels * 8, pixels * 4, pixels * 8, pixels};
     const std::array<unsigned, 3> indices {0, 1, 2};
     const std::array<const char*, 4> keys {"color", "depth", "motion", "bias"};
     gpu.MakeBuffer(gpu.buffers[0], pixels * 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-    gpu.MakeBuffer(gpu.buffers[1], pixels * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    gpu.MakeBuffer(gpu.buffers[1], output_pixels * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     VkFenceCreateInfo fence {};
     fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     CheckVk(gpu.CreateFence(context.device, &fence, nullptr, &gpu.fence), "Create replay fence");
     CheckNgx(report, "AllocateParameters_replay", NVSDK_NGX_VULKAN_AllocateParameters(&gpu.parameters));
-    NVSDK_NGX_Parameter_SetUI(gpu.parameters, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
+    NVSDK_NGX_Parameter_SetUI(gpu.parameters, upscale ? NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance :
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
                              NVSDK_NGX_DLSS_Hint_Render_Preset_K);
     bool first = true;
     for (const auto& frame : sequence.at("frames")) {
@@ -156,12 +174,12 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
         if (first) {
             NVSDK_NGX_DLSS_Create_Params settings {};
             settings.Feature.InWidth = width; settings.Feature.InHeight = height;
-            settings.Feature.InTargetWidth = width; settings.Feature.InTargetHeight = height;
-            settings.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+            settings.Feature.InTargetWidth = output_width; settings.Feature.InTargetHeight = output_height;
+            settings.Feature.InPerfQualityValue = upscale ? NVSDK_NGX_PerfQuality_Value_MaxPerf : NVSDK_NGX_PerfQuality_Value_DLAA;
             settings.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
                 NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
                 NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-            CheckNgx(report, "CREATE_DLAA_replay", NGX_VULKAN_CREATE_DLSS_EXT1(
+            CheckNgx(report, upscale ? "CREATE_SR_replay" : "CREATE_DLAA_replay", NGX_VULKAN_CREATE_DLSS_EXT1(
                 context.device, gpu.command, 1, 1, &gpu.feature, gpu.parameters, &settings));
         }
         auto color = Synthetic::Resource(gpu.images[0], false);
@@ -178,7 +196,7 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
         evaluate.InMVScaleX = 1.0f; evaluate.InMVScaleY = 1.0f;
         evaluate.InPreExposure = 1.0f; evaluate.InExposureScale = 1.0f;
         evaluate.InFrameTimeDeltaInMsec = frame.at("frame_time_ms").get<float>();
-        const auto label = "EVALUATE_DLAA_capture_" + std::to_string(capture);
+        const auto label = std::string(upscale ? "EVALUATE_SR_capture_" : "EVALUATE_DLAA_capture_") + std::to_string(capture);
         CheckNgx(report, label.c_str(), NGX_VULKAN_EVALUATE_DLSS_EXT(gpu.command, gpu.feature, gpu.parameters, &evaluate));
         gpu.Transition(gpu.images[3], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -197,14 +215,14 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
         submit.commandBufferCount = 1; submit.pCommandBuffers = &gpu.command;
         CheckVk(gpu.QueueSubmit(gpu.queue, 1, &submit, gpu.fence), "Submit replay frame");
         CheckVk(gpu.WaitForFences(context.device, 1, &gpu.fence, VK_TRUE, 30'000'000'000ull), "Wait for replay frame");
-        std::vector<uint16_t> half(pixels * 4);
+        std::vector<uint16_t> half(output_pixels * 4);
         CheckVk(gpu.MapMemory(context.device, gpu.buffers[1].memory, 0, VK_WHOLE_SIZE, 0, &mapped), "Map replay output");
-        std::memcpy(half.data(), mapped, pixels * 8);
+        std::memcpy(half.data(), mapped, output_pixels * 8);
         gpu.UnmapMemory(context.device, gpu.buffers[1].memory);
         size_t finite {}, nonzero {};
         float minimum = std::numeric_limits<float>::infinity(), maximum = -minimum;
         double sum {};
-        for (size_t pixel = 0; pixel < pixels; ++pixel) for (size_t channel = 0; channel < 3; ++channel) {
+        for (size_t pixel = 0; pixel < output_pixels; ++pixel) for (size_t channel = 0; channel < 3; ++channel) {
             const auto value = ReadHalf(half[pixel * 4 + channel]);
             if (!std::isfinite(value)) continue;
             ++finite; if (value != 0.0f) ++nonzero;
@@ -212,15 +230,15 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
         }
         const auto raw_path = output_directory / ("capture-" + std::to_string(capture) + ".rgba16f");
         report["replay"]["frames"].push_back({{"capture", capture}, {"reset", first},
-            {"jitter", frame.at("jitter")}, {"invalid_motion_pixels", masked}, {"rgb_components", pixels * 3},
+            {"jitter", frame.at("jitter")}, {"invalid_motion_pixels", masked}, {"rgb_components", output_pixels * 3},
             {"finite_rgb_components", finite}, {"nonzero_rgb_components", nonzero},
             {"minimum", finite ? Json(minimum) : Json(nullptr)}, {"maximum", finite ? Json(maximum) : Json(nullptr)},
             {"mean", finite ? Json(sum / double(finite)) : Json(nullptr)}, {"raw_output", raw_path.u8string()}});
-        if (finite != pixels * 3 || !nonzero || maximum - minimum < 0.001f)
+        if (finite != output_pixels * 3 || !nonzero || maximum - minimum < 0.001f)
             throw std::runtime_error("Replay output was non-finite, empty, or constant");
         std::ofstream raw(raw_path, std::ios::binary);
         raw.exceptions(std::ios::badbit | std::ios::failbit);
-        raw.write(reinterpret_cast<const char*>(half.data()), static_cast<std::streamsize>(pixels * 8));
+        raw.write(reinterpret_cast<const char*>(half.data()), static_cast<std::streamsize>(output_pixels * 8));
         first = false;
     }
     report["feature_evaluation_tested"] = true;
