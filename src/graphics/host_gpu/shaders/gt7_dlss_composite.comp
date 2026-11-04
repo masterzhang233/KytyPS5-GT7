@@ -6,6 +6,18 @@ layout(binding=2) uniform sampler2D native_final;
 layout(binding=3) uniform sampler2D invalid_motion;
 layout(binding=4, rgba16f) uniform writeonly image2D output_color;
 layout(push_constant) uniform Push { uint width; uint height; uint low_width; uint low_height; } pc;
+vec3 reconstructedLinear(vec2 uv) {
+    ivec2 size=textureSize(reconstructed,0);
+    vec2 position=uv*vec2(size)-0.5;
+    ivec2 lo=ivec2(floor(position));
+    vec2 weight=fract(position);
+    vec3 a=texelFetch(reconstructed,clamp(lo,ivec2(0),size-1),0).rgb;
+    vec3 b=texelFetch(reconstructed,clamp(lo+ivec2(1,0),ivec2(0),size-1),0).rgb;
+    vec3 c=texelFetch(reconstructed,clamp(lo+ivec2(0,1),ivec2(0),size-1),0).rgb;
+    vec3 d=texelFetch(reconstructed,clamp(lo+ivec2(1,1),ivec2(0),size-1),0).rgb;
+    // FP32 weights avoid hardware filter precision varying at the 1.5x ratio.
+    return mix(mix(a,b,weight.x),mix(c,d,weight.x),weight.y);
+}
 void main() {
     ivec2 p=ivec2(gl_GlobalInvocationID.xy);
     if(p.x>=pc.width || p.y>=pc.height) return;
@@ -22,7 +34,9 @@ void main() {
     vec4 effect=textureLod(effect_layer,uv,0.0);
     // Both guest and private attachments are floating point: preserve coverage
     // outside [0,1] instead of introducing a saturation absent from the draw.
-    vec3 color=(1.0-effect.a)*texelFetch(reconstructed,p,0).rgb+effect.rgb;
+    // Reconstruction is 1440p; the guest's tone-map/UI target remains 4K.
+    // Normalized sampling also preserves the old equal-resolution path.
+    vec3 color=(1.0-effect.a)*reconstructedLinear(uv)+effect.rgb;
     if(invalid) color=textureLod(native_final,uv,0.0).rgb;
     imageStore(output_color,p,vec4(color,1.0));
 }

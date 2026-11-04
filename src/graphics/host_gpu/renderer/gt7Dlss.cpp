@@ -23,7 +23,10 @@
 namespace Libs::Graphics {
 namespace {
 constexpr uint32_t InputWidth = 1920, InputHeight = 1080;
-constexpr uint32_t OutputWidth = 3840, OutputHeight = 2160;
+constexpr uint32_t OutputWidth = 2560, OutputHeight = 1440;
+// The game's history allocation and tone-map/UI chain keep their native extent.
+// They are independent of the private DLSS reconstruction resolution.
+constexpr uint32_t GuestWidth = 3840, GuestHeight = 2160;
 constexpr auto SampledLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 constexpr auto ShaderRead = vk::AccessFlagBits2::eShaderRead;
 constexpr auto ShaderWrite = vk::AccessFlagBits2::eShaderWrite;
@@ -201,7 +204,7 @@ struct Gt7Dlss::Impl {
         create.enabled_device_extensions = extensions.data();
         create.input_width = InputWidth; create.input_height = InputHeight;
         create.output_width = OutputWidth; create.output_height = OutputHeight;
-        create.quality = KYTY_DLSS_PERFORMANCE;
+        create.quality = KYTY_DLSS_QUALITY;
         KytyDlssError error {};
         if (api->create_context(&create, &ngx, &error) != KYTY_DLSS_OK) {
             LOGF("GT7 DLSS: backend unavailable; original renderer retained: %s\n", error.message);
@@ -227,9 +230,9 @@ struct Gt7Dlss::Impl {
         invalid = MakeImage(InputWidth, InputHeight, vk::Format::eR8Unorm, 1);
         output = MakeImage(OutputWidth, OutputHeight, vk::Format::eR16G16B16A16Sfloat, 8);
         effect = MakeImage(InputWidth, InputHeight, vk::Format::eR16G16B16A16Sfloat, 8);
-        composed = MakeImage(OutputWidth, OutputHeight, vk::Format::eR16G16B16A16Sfloat, 8);
+        composed = MakeImage(GuestWidth, GuestHeight, vk::Format::eR16G16B16A16Sfloat, 8);
         initialized = true;
-        LOGF("GT7 DLSS: experimental GPU helper ready, 1920x1080 -> 3840x2160, preset K performance\n");
+        LOGF("GT7 DLSS: experimental GPU helper ready, 1920x1080 -> 2560x1440, preset K quality (fixed input); guest tone-map/UI 3840x2160\n");
         return true;
     }
 
@@ -309,8 +312,8 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     if (!Shape(source_depth, InputWidth, InputHeight, vk::Format::eD32SfloatS8Uint) ||
         !Shape(source_motion, InputWidth, InputHeight, vk::Format::eR16G16Sfloat) ||
         !Shape(source_color, InputWidth, InputHeight, vk::Format::eB10G11R11UfloatPack32) ||
-        !Shape(source_history, OutputWidth, OutputHeight, vk::Format::eR16G16B16A16Sfloat) ||
-        !Shape(history_target, OutputWidth, OutputHeight, vk::Format::eR16G16B16A16Sfloat) ||
+        !Shape(source_history, GuestWidth, GuestHeight, vk::Format::eR16G16B16A16Sfloat) ||
+        !Shape(history_target, GuestWidth, GuestHeight, vk::Format::eR16G16B16A16Sfloat) ||
         !Shape(scene_target, InputWidth, InputHeight, vk::Format::eB10G11R11UfloatPack32) ||
         colors[0].target_slot != 0 || colors[1].target_slot != 1 ||
         colors[0].image_id == pixel.images[3].image_id ||
@@ -414,7 +417,7 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
             LOGF("GT7 DLSS: requested frame-graph trace after first evaluation\n");
         }
     }
-    if (Report(s.evaluations)) LOGF("GT7 DLSS: evaluated #%llu 1920x1080 -> 3840x2160, jitter=(%.6f,%.6f), reset=%u\n",
+    if (Report(s.evaluations)) LOGF("GT7 DLSS: evaluated #%llu 1920x1080 -> 2560x1440, jitter=(%.6f,%.6f), reset=%u\n",
         static_cast<unsigned long long>(s.evaluations), evaluate.jitter_x, evaluate.jitter_y, result.reset_used);
     return true;
 }

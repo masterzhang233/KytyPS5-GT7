@@ -5756,7 +5756,8 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		}
 		const auto ps_hash = ps_input_info->stage.program->shader_hash;
 		const auto vs_hash = vertex_info[0].stage.program->shader_hash;
-		const bool blur = ps_hash == 0xcdbe808cb64e4b11ULL && vs_hash == 0xf13bd2584bf580c0ULL;
+		const bool blur = (ps_hash == 0xcdbe808cb64e4b11ULL || ps_hash == 0xa50c564bf8216bebULL ||
+		                   ps_hash == 0x120055aad94796a9ULL) && vs_hash == 0xf13bd2584bf580c0ULL;
 		const bool overlay = ps_hash == 0x939a0b13ee9531c5ULL && vs_hash == 0xdf39fc07bb648d84ULL;
 		if ((!blur && !overlay) || programs.pixel.hash != ps_hash ||
 		    programs.vertex[0].hash != vs_hash) {
@@ -5764,7 +5765,9 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		}
 		const auto& color = colors[0];
 		const auto& ps = *ps_input_info;
-		// Both decoded shaders export compressed FP16 RGBA, including their straight alpha.
+		// The captured shaders export compressed FP16 RGBA, including their straight alpha.
+		// The two additional post-effect variants end in the same MRT0 exp (f8001c0f),
+		// and their captured blend state is the same source-alpha over operation.
 		// B10G11R11 discards stored alpha, not the shader alpha used by RGB blending. Identity
 		// mapping therefore allows the same module to store that alpha in the private target.
 		// Reject remapped/dual-source modules; changing only their attachment would be wrong.

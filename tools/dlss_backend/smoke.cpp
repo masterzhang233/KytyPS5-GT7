@@ -59,7 +59,8 @@ std::vector<const char*> ExtensionNames(const KytyDlssExtensions& list) {
 }
 void Run(const std::filesystem::path& dll, const std::filesystem::path& runtime,
          const std::filesystem::path& output, Json& report, const PrepareReplay* prepare=nullptr,
-         const std::filesystem::path* composite=nullptr) {
+         const std::filesystem::path* composite=nullptr, bool quality_1440p=false,
+         bool resampled_composite=false) {
     HostContext h;
     h.backend=LoadLibraryExW(dll.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!h.backend) throw std::runtime_error("Cannot load external backend DLL");
@@ -123,16 +124,20 @@ void Run(const std::filesystem::path& dll, const std::filesystem::path& runtime,
     auto gdpa=InstanceProc<PFN_vkGetDeviceProcAddr>(h.gipa,h.instance,"vkGetDeviceProcAddr");
     h.destroy_device=reinterpret_cast<PFN_vkDestroyDevice>(gdpa(h.device,"vkDestroyDevice"));
     h.device_wait_idle=reinterpret_cast<PFN_vkDeviceWaitIdle>(gdpa(h.device,"vkDeviceWaitIdle"));
-    if(composite) {RunCompositeValidation(h,physical,family,*composite,output,report);return;}
-    const uint32_t iw=prepare?prepare->sequence.at("width").get<uint32_t>():320;
-    const uint32_t ih=prepare?prepare->sequence.at("height").get<uint32_t>():180;
-    const uint32_t ow=prepare?prepare->sequence.at("output_width").get<uint32_t>():640;
-    const uint32_t oh=prepare?prepare->sequence.at("output_height").get<uint32_t>():360;
+    if(composite) {RunCompositeValidation(h,physical,family,*composite,output,report,resampled_composite);return;}
+    const uint32_t iw=prepare?prepare->sequence.at("width").get<uint32_t>():quality_1440p?1920:320;
+    const uint32_t ih=prepare?prepare->sequence.at("height").get<uint32_t>():quality_1440p?1080:180;
+    const uint32_t ow=prepare?prepare->sequence.at("output_width").get<uint32_t>():quality_1440p?2560:640;
+    const uint32_t oh=prepare?prepare->sequence.at("output_height").get<uint32_t>():quality_1440p?1440:360;
+    const bool quality_mode=quality_1440p || (prepare && prepare->sequence.at("quality")=="quality");
     KytyDlssCreateInfo ci {};ci.struct_size=sizeof(ci);ci.paths=paths;
     ci.instance=h.instance;ci.physical_device=physical;ci.device=h.device;
     ci.get_instance_proc_addr=h.gipa;ci.get_device_proc_addr=gdpa;ci.queue_family_index=family;
     ci.enabled_feature_flags=3;ci.enabled_device_extension_count=static_cast<uint32_t>(de.size());ci.enabled_device_extensions=de.data();
-    ci.input_width=iw;ci.input_height=ih;ci.output_width=ow;ci.output_height=oh;ci.quality=KYTY_DLSS_PERFORMANCE;
+    ci.input_width=iw;ci.input_height=ih;ci.output_width=ow;ci.output_height=oh;
+    ci.quality=quality_mode?KYTY_DLSS_QUALITY:KYTY_DLSS_PERFORMANCE;
+    report["input"]={iw,ih};report["output"]={ow,oh};report["quality"]=quality_mode?"quality":"performance";
+    report["fixed_input_fraction"]=double(iw)/ow;
     auto bad_ci=ci;bad_ci.enabled_device_extension_count=0;KytyDlssContext* rejected_ctx {};
     if (h.api.create_context(&bad_ci,&rejected_ctx,&error)!=KYTY_DLSS_UNSUPPORTED || rejected_ctx)
         throw std::runtime_error("Missing enabled extension rejection failed");
@@ -140,6 +145,10 @@ void Run(const std::filesystem::path& dll, const std::filesystem::path& runtime,
     KytyDlssOptimalSettings optimal {};optimal.struct_size=sizeof(optimal);
     Check(h.api.query_optimal(h.ngx,&optimal,&error),error,"Optimal settings");
     report["recommended_input"]={optimal.optimal_width,optimal.optimal_height};
+    report["min_input"]={optimal.min_width,optimal.min_height};
+    report["max_input"]={optimal.max_width,optimal.max_height};
+    report["input_within_runtime_range"]=iw>=optimal.min_width&&ih>=optimal.min_height&&
+        iw<=optimal.max_width&&ih<=optimal.max_height;
     if (h.api.destroy_context(h.ngx,0,&error)!=KYTY_DLSS_INVALID_ARGUMENT) throw std::runtime_error("Unsafe destroy was not rejected");
     if (prepare) {
         RunPrepareReplay(h,physical,family,*prepare,output,report);
@@ -234,8 +243,10 @@ void Run(const std::filesystem::path& dll, const std::filesystem::path& runtime,
 } // namespace
 
 int wmain(int argc,wchar_t** argv) {
-    if(argc!=4 && !(argc==7 && std::wstring(argv[4])==L"--prepare") && !(argc==6 && std::wstring(argv[4])==L"--composite")) {
-        std::wcerr<<L"Usage: kyty_dlss_backend_smoke <absolute backend DLL> <absolute runtime directory> <absolute output directory> [--prepare <absolute sequence.json> <absolute prepare.spv> | --composite <absolute composite.spv>]\n";return 2;
+    const bool quality_1440p=argc==5&&std::wstring(argv[4])==L"--quality-1440p";
+    const bool composite_mode=argc==6&&(std::wstring(argv[4])==L"--composite"||std::wstring(argv[4])==L"--composite-resized");
+    if(argc!=4 && !(argc==7 && std::wstring(argv[4])==L"--prepare") && !composite_mode && !quality_1440p) {
+        std::wcerr<<L"Usage: kyty_dlss_backend_smoke <absolute backend DLL> <absolute runtime directory> <absolute output directory> [--quality-1440p | --prepare <absolute sequence.json> <absolute prepare.spv> | --composite <absolute composite.spv> | --composite-resized <absolute composite.spv>]\n";return 2;
     }
     Json report={{"schema",1},{"kind","external C ABI reuse-host Vulkan synthetic smoke"},{"passed",false},
         {"gt7_data_used",false},{"in_game_integration_tested",false},{"validation_layer_enabled",false},
@@ -250,13 +261,16 @@ int wmain(int argc,wchar_t** argv) {
             if(!prepare.sequence_path.is_absolute()||!prepare.spirv.is_absolute())throw std::runtime_error("Prepare paths must be absolute");
             prepare.sequence=ReadJson(prepare.sequence_path);
             const auto& seq=prepare.sequence;
-            if(seq.at("schema")!="gt7.ngx-replay.v2"||seq.at("quality")!="performance"||seq.at("width")!=1920||seq.at("height")!=1080||
-               seq.at("output_width")!=3840||seq.at("output_height")!=2160||seq.at("frames").size()!=4)
-                throw std::runtime_error("Prepare mode requires the verified four-frame 1080p to 4K Performance capture sequence");
+            const bool performance=seq.at("quality")=="performance"&&seq.at("output_width")==3840&&seq.at("output_height")==2160;
+            const bool quality=seq.at("quality")=="quality"&&seq.at("output_width")==2560&&seq.at("output_height")==1440;
+            if(seq.at("schema")!="gt7.ngx-replay.v2"||seq.at("width")!=1920||seq.at("height")!=1080||
+               !(performance||quality)||seq.at("frames").size()!=4)
+                throw std::runtime_error("Prepare mode requires four 1080p frames with 4K Performance or fixed 1440p Quality output");
             prepare.constants=ReadJson(Utf8Path(seq.at("constants_source").get<std::string>()));
         }
         if(argc==6) {composite=argv[5];if(!composite.is_absolute())throw std::runtime_error("Composite path must be absolute");}
-        std::filesystem::create_directories(output);Run(dll,runtime,output,report,argc==7?&prepare:nullptr,argc==6?&composite:nullptr);
+        std::filesystem::create_directories(output);Run(dll,runtime,output,report,argc==7?&prepare:nullptr,
+            composite_mode?&composite:nullptr,quality_1440p,composite_mode&&std::wstring(argv[4])==L"--composite-resized");
     }catch(const std::exception& e){report["error"]=e.what();}
     try {std::ofstream file(output/L"smoke-report.json");file.exceptions(std::ios::failbit|std::ios::badbit);file<<report.dump(2)<<'\n';}
     catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

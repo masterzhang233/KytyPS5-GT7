@@ -2983,17 +2983,64 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				bool expected = false;
 				if (direct && bindings.pixel && state.color_count == 1 && Gt7DlssFullViewport(buffer, 1920, 1080)) {
 					const auto& images = bindings.pixel->images;
-					const bool blur = m_gt7_dlss_effects == 0 && ps == 0xcdbe808cb64e4b11ULL &&
-					    vs == 0xf13bd2584bf580c0ULL && images.size() == 3 && draw.index_count == 4 &&
-					    topology == vk::PrimitiveTopology::eTriangleStrip &&
-					    Gt7DlssTextureShape(images[0],1920,1080,vk::Format::eR16G16Sfloat) &&
-					    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16B16A16Sfloat) &&
-					    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16G16Sfloat);
+					bool blur = false;
+					if (m_gt7_dlss_effects == 0 && vs == 0xf13bd2584bf580c0ULL &&
+					    images.size() == 3 && draw.index_count == 4 &&
+					    topology == vk::PrimitiveTopology::eTriangleStrip) {
+						// The captured post effects have different inputs; keep each shader's
+						// exact resource contract rather than accepting an arbitrary blur draw.
+						const bool motion = ps == 0xcdbe808cb64e4b11ULL &&
+						    Gt7DlssTextureShape(images[0],1920,1080,vk::Format::eR16G16Sfloat) &&
+						    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16B16A16Sfloat) &&
+						    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16G16Sfloat);
+						const bool depth = ps == 0xa50c564bf8216bebULL &&
+						    Gt7DlssTextureShape(images[0],1920,1080,vk::Format::eR32Sfloat) &&
+						    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16B16A16Sfloat) &&
+						    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16Sfloat);
+						const bool alternate_motion = ps == 0x120055aad94796a9ULL &&
+						    Gt7DlssTextureShape(images[0],1920,1080,vk::Format::eR16G16Sfloat) &&
+						    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16Sfloat) &&
+						    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16G16B16A16Sfloat);
+						blur = motion || depth || alternate_motion;
+					}
 					const bool overlay = m_gt7_dlss_effects == 1 && ps == 0x939a0b13ee9531c5ULL &&
-					    vs == 0xdf39fc07bb648d84ULL && draw.index_count == 30 && images.size() == 1 &&
+					    vs == 0xdf39fc07bb648d84ULL && draw.index_count != 0 && draw.index_count % 6 == 0 && images.size() == 1 &&
 					    topology == vk::PrimitiveTopology::eTriangleList &&
 					    Gt7DlssTextureShape(images[0],256,384,vk::Format::eBc3UnormBlock);
-					expected = blur || overlay;
+					expected = (blur || overlay) && bool(state.color_info[0].image_id) &&
+					    state.color_info[0].desc.info.data.Valid();
+					if (expected) {
+						// Replaying source-alpha blending is valid only when the source does
+						// not read the destination being replaced. Check cache identity as well
+						// as guest aliases, and reject unenumerated image/address reads.
+						const auto& target = state.color_info[0];
+						const auto& target_image = m_context.GetTextureCache().GetImage(target.image_id);
+						for (const auto* stage : stages) {
+							if (!stage->runtime || !*stage->runtime) {
+								expected = false;
+								continue;
+							}
+							if (!stage->bindless_heaps.empty() || !stage->bindless_patches.empty() ||
+							    stage->runtime->program->info.uses_dma ||
+							    std::ranges::any_of(stage->runtime->program->info.images, [](const auto& resource) {
+								    return resource.written || resource.bindless || resource.runtime;
+							    })) expected = false;
+							for (const auto& texture : stage->images) {
+								if (!texture.image_id || texture.desc.type != TextureCache::BindingType::Texture ||
+								    !texture.desc.info.data.Valid() ||
+								    texture.image_id == target.image_id ||
+								    ImageRangeOverlaps(texture.desc.info.data, target.desc.info.data) ||
+								    m_context.GetTextureCache().GetImage(texture.image_id).backing.image == target_image.backing.image)
+									expected = false;
+							}
+							for (const auto& source : stage->buffer_sources) {
+								// Missing descriptors produce empty source records; they cannot alias.
+								if (source.size == 0) continue;
+								const GuestRange range {source.address, source.size};
+								if (!range.Valid() || ImageRangeOverlaps(range, target.desc.info.data)) expected = false;
+							}
+						}
+					}
 				}
 				if (expected) {
 					dlss_effect_pipeline = m_context.GetPipelineCache().TryGetGraphicsPipeline(

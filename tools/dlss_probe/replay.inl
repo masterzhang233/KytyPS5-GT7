@@ -21,8 +21,9 @@ void ValidateReplay(const Json& sequence) {
         throw std::runtime_error("Replay output dimensions must be between 64 and 4096");
     const auto quality = sequence.at("schema") == "gt7.ngx-replay.v1" ? "dlaa" : sequence.at("quality").get<std::string>();
     if (!((quality == "dlaa" && width == output_width && height == output_height) ||
-          (quality == "performance" && width * 2 == output_width && height * 2 == output_height)))
-        throw std::runtime_error("Replay supports same-size DLAA or exactly 2x Performance SR");
+          (quality == "performance" && width * 2 == output_width && height * 2 == output_height) ||
+          (quality == "quality" && width == 1920 && height == 1080 && output_width == 2560 && output_height == 1440)))
+        throw std::runtime_error("Replay supports same-size DLAA, exactly 2x Performance, or fixed 1080p to 1440p Quality");
     const auto& frames = sequence.at("frames");
     if (!frames.is_array() || frames.size() < 2 || frames.size() > 8)
         throw std::runtime_error("Replay requires 2 to 8 consecutive captured frames");
@@ -73,9 +74,15 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
     const auto output_height = ReplayOutputDimension(sequence, "height", "output_height");
     const size_t output_pixels = size_t(output_width) * output_height;
     const bool upscale = output_width != width;
+    const auto quality = sequence.at("schema") == "gt7.ngx-replay.v1" ? "dlaa" : sequence.at("quality").get<std::string>();
+    const auto quality_value = quality == "quality" ? NVSDK_NGX_PerfQuality_Value_MaxQuality :
+        quality == "performance" ? NVSDK_NGX_PerfQuality_Value_MaxPerf : NVSDK_NGX_PerfQuality_Value_DLAA;
+    const auto* preset_key = quality == "quality" ? NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality :
+        quality == "performance" ? NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance : NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
     report["replay"] = {
-        {"mode", upscale ? "2x DLSS SR offline diagnostic" : "native-resolution DLAA diagnostic; no upscaling"},
-        {"quality", upscale ? "performance" : "dlaa"},
+        {"mode", quality == "quality" ? "fixed 1080p to 1440p SR diagnostic; Quality hint, custom 75% input" :
+            upscale ? "2x DLSS SR offline diagnostic" : "native-resolution DLAA diagnostic; no upscaling"},
+        {"quality", quality},
         {"input", {width, height}}, {"output", {output_width, output_height}},
         {"gt7_data_used", true}, {"gt7_integration_tested", false},
         {"temporal_quality_verified", false}, {"performance_verified", false},
@@ -112,9 +119,7 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
     fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     CheckVk(gpu.CreateFence(context.device, &fence, nullptr, &gpu.fence), "Create replay fence");
     CheckNgx(report, "AllocateParameters_replay", NVSDK_NGX_VULKAN_AllocateParameters(&gpu.parameters));
-    NVSDK_NGX_Parameter_SetUI(gpu.parameters, upscale ? NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance :
-                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
-                             NVSDK_NGX_DLSS_Hint_Render_Preset_K);
+    NVSDK_NGX_Parameter_SetUI(gpu.parameters, preset_key, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
     bool first = true;
     for (const auto& frame : sequence.at("frames")) {
         const auto capture = frame.at("capture").get<unsigned>();
@@ -175,7 +180,7 @@ void EvaluateReplay(Context& context, VkPhysicalDevice physical, uint32_t queue_
             NVSDK_NGX_DLSS_Create_Params settings {};
             settings.Feature.InWidth = width; settings.Feature.InHeight = height;
             settings.Feature.InTargetWidth = output_width; settings.Feature.InTargetHeight = output_height;
-            settings.Feature.InPerfQualityValue = upscale ? NVSDK_NGX_PerfQuality_Value_MaxPerf : NVSDK_NGX_PerfQuality_Value_DLAA;
+            settings.Feature.InPerfQualityValue = quality_value;
             settings.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
                 NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
                 NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;

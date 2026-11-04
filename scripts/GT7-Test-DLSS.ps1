@@ -76,7 +76,7 @@ try {
         note = $(if ($GraphicsCheckOnly) {
             'Initializes the real emulator window and Vulkan device, then exits before guest ELF loading or execution. No game state copied. This does not validate DLSS evaluation or rendering.'
         } else {
-            'Conditional 1920x1080 to 3840x2160 desktop SR; window is 2560x1440. Check runtime GT7 DLSS log counters to confirm use. Mirror fallback is spatial; exposure/temporal quality/FPS not certified.'
+            'Conditional fixed 1920x1080 to 2560x1440 desktop SR, preset K with Quality hint; guest tone-map/UI surface remains 3840x2160, window is 2560x1440. Check runtime GT7 DLSS log counters to confirm use. Mirror fallback is spatial; exposure/temporal quality/FPS not certified.'
         })
     }
     $manifestPath = Join-Path $run 'playtest-manifest.json'

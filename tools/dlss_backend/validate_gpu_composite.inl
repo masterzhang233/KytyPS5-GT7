@@ -11,29 +11,32 @@ uint16_t ReferenceHalf(double value) {
     return static_cast<uint16_t>(below<above||(below==above&&((lo-1)&1)==0)?lo-1:lo);
 }
 void RunCompositeValidation(HostContext& h,VkPhysicalDevice physical,uint32_t family,
-                            const std::filesystem::path& spirv,const std::filesystem::path& output,Json& report) {
+                            const std::filesystem::path& spirv,const std::filesystem::path& output,Json& report,
+                            bool resampled=false) {
     // Odd low extents and non-multiple-of-eight output exercise all dispatch borders.
-    constexpr uint32_t lw=17,lh=11,w=34,height=22;
-    constexpr size_t low_pixels=size_t(lw)*lh,pixels=size_t(w)*height;
+    // The resized case preserves the live 1080:1440:2160 ratios on both axes.
+    const uint32_t lw=resampled?21:17,lh=resampled?15:11,w=lw*2,height=lh*2;
+    const uint32_t rw=resampled?28:w,rh=resampled?20:height;
+    const size_t low_pixels=size_t(lw)*lh,pixels=size_t(w)*height,base_pixels=size_t(rw)*rh;
     PrepareGpu gpu(h,physical);gpu.GetDeviceQueue(h.device,family,0,&gpu.queue);
     VkCommandPoolCreateInfo pc {};pc.sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;pc.queueFamilyIndex=family;
     CheckVk(gpu.CreateCommandPool(h.device,&pc,nullptr,&gpu.pool),"Composite test command pool");
     VkCommandBufferAllocateInfo ca {};ca.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;ca.commandPool=gpu.pool;
     ca.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;ca.commandBufferCount=1;CheckVk(gpu.AllocateCommandBuffers(h.device,&ca,&gpu.command),"Composite test command buffer");
     VkFenceCreateInfo fc {};fc.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;CheckVk(gpu.CreateFence(h.device,&fc,nullptr,&gpu.fence),"Composite test fence");
-    gpu.MakeImage(gpu.images[0],w,height,VK_FORMAT_R16G16B16A16_SFLOAT,false);
+    gpu.MakeImage(gpu.images[0],rw,rh,VK_FORMAT_R16G16B16A16_SFLOAT,false);
     gpu.MakeImage(gpu.images[1],lw,lh,VK_FORMAT_R16G16B16A16_SFLOAT,false);
     gpu.MakeImage(gpu.images[2],lw,lh,VK_FORMAT_R16G16B16A16_SFLOAT,false);
     gpu.MakeImage(gpu.images[3],lw,lh,VK_FORMAT_R8_UNORM,false);
     gpu.MakeImage(gpu.images[4],w,height,VK_FORMAT_R16G16B16A16_SFLOAT,true);
-    const std::array<size_t,4> offsets {0,pixels*8,pixels*8+low_pixels*8,pixels*8+low_pixels*16};
+    const std::array<size_t,4> offsets {0,base_pixels*8,base_pixels*8+low_pixels*8,base_pixels*8+low_pixels*16};
     gpu.MakeBuffer(gpu.buffers[0],offsets[3]+low_pixels,VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     gpu.MakeBuffer(gpu.buffers[1],pixels*8,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     gpu.MakePreparePipeline(spirv,true);
-    std::vector<uint16_t> base(pixels*4),effect(low_pixels*4),native(low_pixels*4);
+    std::vector<uint16_t> base(base_pixels*4),effect(low_pixels*4),native(low_pixels*4);
     std::vector<uint8_t> mask(low_pixels);
-    for(uint32_t y=0;y<height;++y)for(uint32_t x=0;x<w;++x) {
-        const size_t p=(size_t(y)*w+x)*4;
+    for(uint32_t y=0;y<rh;++y)for(uint32_t x=0;x<rw;++x) {
+        const size_t p=(size_t(y)*rw+x)*4;
         base[p]=ReferenceHalf(1+double(x%11)/16);base[p+1]=ReferenceHalf(2+double(y%7)/8);
         base[p+2]=ReferenceHalf(.25+double((x+y)%13)/32);base[p+3]=ReferenceHalf(1);
     }
@@ -45,15 +48,16 @@ void RunCompositeValidation(HostContext& h,VkPhysicalDevice physical,uint32_t fa
         native[p]=ReferenceHalf(9+double(x)/16);native[p+1]=ReferenceHalf(.125+double(y)/32);
         native[p+2]=ReferenceHalf(7+double((x+y)%2)/2);native[p+3]=ReferenceHalf(1);
     }
-    const auto sample=[&](const std::vector<uint16_t>& image,double x,double y,unsigned c) {
+    const auto sample=[](const std::vector<uint16_t>& image,uint32_t iw,uint32_t ih,double x,double y,unsigned c) {
         const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
         const double fx=x-ix,fy=y-iy;
-        const auto at=[&](int xx,int yy){return double(ReadHalf(image[(size_t(std::clamp(yy,0,int(lh)-1))*lw+std::clamp(xx,0,int(lw)-1))*4+c]));};
+        const auto at=[&](int xx,int yy){return double(ReadHalf(image[(size_t(std::clamp(yy,0,int(ih)-1))*iw+std::clamp(xx,0,int(iw)-1))*4+c]));};
         return (1-fy)*((1-fx)*at(ix,iy)+fx*at(ix+1,iy))+fy*((1-fx)*at(ix,iy+1)+fx*at(ix+1,iy+1));
     };
     report["kind"]="synthetic HDR premultiplied effect GPU composite versus independent CPU sampling";
     report["gt7_data_used"]=false;report["ngx_evaluated"]=false;report["requested_preset"]=nullptr;
-    report["low_extent"]={lw,lh};report["output_extent"]={w,height};report["cases"]=Json::array();
+    report["low_extent"]={lw,lh};report["reconstruction_extent"]={rw,rh};
+    report["output_extent"]={w,height};report["resampled_reconstruction"]=resampled;report["cases"]=Json::array();
     report["reference"]="double-precision normalized-center linear clamp sampling; max 2x2 clamped invalid mask; RGB=(1-A)*base+P without alpha/RGB saturation, invalid selects linear-clamp native RGB; output alpha=1";
     report["acceptance"]="All pixels finite, alpha exactly one, RGB <= 1 FP16 ULP from nearest-even reference";
     report["limitations"]="Synthetic base/effect/native/mask only; does not execute guest effect shaders or establish real-scene blend equivalence/visual quality";
@@ -62,8 +66,8 @@ void RunCompositeValidation(HostContext& h,VkPhysicalDevice physical,uint32_t fa
         if(test==2) {
             // Half-quantized fractions force nontrivial interpolation/composite
             // rounding instead of checking only exactly representable colors.
-            for(uint32_t y=0;y<height;++y)for(uint32_t x=0;x<w;++x) {
-                const size_t p=(size_t(y)*w+x)*4;
+            for(uint32_t y=0;y<rh;++y)for(uint32_t x=0;x<rw;++x) {
+                const size_t p=(size_t(y)*rw+x)*4;
                 base[p]=ReferenceHalf(1+double(x%11)/37);base[p+1]=ReferenceHalf(2+double(y%7)/43);
                 base[p+2]=ReferenceHalf(.25+double((x+y)%13)/71);
             }
@@ -78,8 +82,8 @@ void RunCompositeValidation(HostContext& h,VkPhysicalDevice physical,uint32_t fa
         if(test==3) {
             // Isolate the no-saturation algebra with exact binary sources;
             // the preceding case separately exercises fractional HDR rounding.
-            for(uint32_t y=0;y<height;++y)for(uint32_t x=0;x<w;++x) {
-                const size_t p=(size_t(y)*w+x)*4;
+            for(uint32_t y=0;y<rh;++y)for(uint32_t x=0;x<rw;++x) {
+                const size_t p=(size_t(y)*rw+x)*4;
                 base[p]=ReferenceHalf(1+double(x%11)/16);base[p+1]=ReferenceHalf(2+double(y%7)/8);
                 base[p+2]=ReferenceHalf(.25+double((x+y)%13)/32);
             }
@@ -128,10 +132,12 @@ void RunCompositeValidation(HostContext& h,VkPhysicalDevice physical,uint32_t fa
             const int ix=int(std::floor(lx)),iy=int(std::floor(ly));bool invalid=false;
             for(int yy=0;yy<2;++yy)for(int xx=0;xx<2;++xx)
                 invalid |= mask[size_t(std::clamp(iy+yy,0,int(lh)-1))*lw+std::clamp(ix+xx,0,int(lw)-1)]>127;
-            const double alpha=sample(effect,lx,ly,3);
+            const double rx=(double(x)+.5)*rw/w-.5,ry=(double(y)+.5)*rh/height-.5;
+            const double alpha=sample(effect,lw,lh,lx,ly,3);
             if(invalid)++invalid_pixels;else {++valid_pixels;if(alpha<0)++alpha_below;else if(alpha>1)++alpha_above;else if(alpha==0)++alpha_zero;else if(alpha==1)++alpha_one;else ++alpha_between;}
             for(unsigned c=0;c<4;++c) {
-                const double expected=c==3?1:invalid?sample(native,lx,ly,c):(1-alpha)*ReadHalf(base[p*4+c])+sample(effect,lx,ly,c);
+                const double expected=c==3?1:invalid?sample(native,lw,lh,lx,ly,c):
+                    (1-alpha)*sample(base,rw,rh,rx,ry,c)+sample(effect,lw,lh,lx,ly,c);
                 reference[p*4+c]=ReferenceHalf(expected);
                 uint16_t actual;std::memcpy(&actual,rendered.data()+(p*4+c)*2,2);const float value=ReadHalf(actual);
                 if(std::isfinite(value))++finite;

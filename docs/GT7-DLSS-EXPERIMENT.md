@@ -6,7 +6,9 @@ The normal emulator build does not link NVIDIA NGX. Its optional C ABI backend i
 built separately in `tools/dlss_backend` with an external NVIDIA SDK/runtime.
 No game data, SDK files or generated captures belong in this repository.
 The local test runtime inspected on 2026-11-04 reports DLL product version
-`310.9.16.0`. The backend requests transformer preset K in Performance mode.
+`310.9.16.0`. The current renderer requests transformer preset K with the Quality
+hint, using a fixed 1920 by 1080 input and 2560 by 1440 reconstruction. This is a
+custom 75% input scale, not the standard recommended Quality input resolution.
 This integration implements Super Resolution only, with no frame generation.
 
 ## Evidence and limits
@@ -23,6 +25,15 @@ The independent backend also passed a host-owned Vulkan-device smoke test across
 four frames. The host submits and waits; the backend only records GPU commands.
 Its ABI header compiles as C and carries no NVIDIA SDK types or C++ allocations.
 
+The fixed 1080p-to-1440p Quality configuration also passed a four-frame host smoke
+and four real captured frames on the RTX 3080. The runtime recommends 1707 by 960
+but accepts input sizes from 1280 by 720 through 2560 by 1440. GPU preparation
+matched the CPU conversion bit for bit. Existing Performance and DLAA replays
+still pass. The composite passes eight synthetic GPU cases, including separate
+1080:1440:2160 input/reconstruction/guest proportions, within one FP16 ULP of the
+reference. Reconstruction resampling uses explicit FP32 bilinear weights to
+avoid hardware filter precision differences at the 1.5x guest composition ratio.
+
 The 2026-11-04 race playtest exited normally after 586 seconds. Its periodic logs
 prove at least 13,551 evaluations and 5,400 composites, but also at least 8,100
 cancelled frames. A long interval continued evaluating without any composites;
@@ -30,24 +41,37 @@ this is intermittent coverage, not full-race DLSS support. The player reported
 no obvious visual artifacts. Background shader compilation was still active,
 so this run does not establish performance or complete visual correctness.
 
+The following 346-second diagnostic race also exited normally, but the player
+reported flicker. Captures identified two additional alpha-over full-screen
+postprocess variants and a scene overlay whose quad count changes: 12 and 18
+vertices were captured, and 24/36 were logged. Requiring exactly 30 vertices
+rejected these draws and repeatedly reset temporal history. Their shader,
+texture, blend and depth conditions still need to match; quad count alone must
+not invalidate this side-effect-free replay. This explains a concrete source of
+intermittent fallback, but does not prove that all visible flicker has one cause.
+
 ## Experimental render path
 
 1. Match the verified TAA shader pair and complete input/output shapes. Validate
    current constants, viewport and scissor. Prepare private RGBA16F color, R32F
    depth, RG32F clean backward motion and an invalid-motion mask on the GPU.
-2. Evaluate NGX into a private 4K HDR image. Keep the original guest TAA/history
+2. Evaluate NGX into a private 1440p HDR image with the Quality hint. Keep the original guest TAA/history
    and low-resolution postprocessing chain running.
-3. Replay the verified motion-blur blend and depth-tested scene-overlay draw
+3. Replay the verified full-screen postprocess blend and depth-tested scene-overlay draw
    into a cleared 1080p RGBA16F effect layer. Preserve original geometry,
    textures, viewport, scissor and depth tests; do not repeat guest queries.
    Accumulate premultiplied RGB `P` and coverage `A` with straight-source RGB
    blending and `One / OneMinusSrcAlpha` alpha blending.
 4. At the verified 1080p-to-4K scale draw, combine `DLSS * (1-A) + P` in linear
    HDR. Preserve the original low-resolution final color as the spatial fallback
-   for invalid-motion regions. The existing 4K tone mapping and UI then run.
+   for invalid-motion regions. Sample the private 1440p reconstruction with
+   normalized linear coordinates into this original 4K guest surface. The
+   existing 4K tone mapping and UI then run, with final presentation to the
+   2560 by 1440 window. The guest pipeline has not been converted wholly to 1440p.
 
-The prototype accepts a narrow observed sequence: an optional blur draw, an
-optional following 30-vertex overlay draw and one four-vertex scale draw. Every
+The prototype accepts a narrow observed sequence: an optional verified full-screen
+postprocess draw, an optional following overlay made of triangle-list quads and
+one four-vertex scale draw. Every
 scene writer that actually occurs must be verified; the scale draw may follow
 zero, one or two accepted effects. An untouched effect layer has `P=A=0`, so
 omitting effects is compatible with the same composite equation. The scale quad, white tint,

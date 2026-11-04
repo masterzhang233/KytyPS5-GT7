@@ -12,7 +12,7 @@ struct PreparedBindings;
 struct RenderColorInfo;
 struct TextureBinding;
 
-// Experimental, opt-in GT7 1080p -> 2160p reconstruction. The owner must finish
+// Experimental, opt-in GT7 1080p -> 1440p reconstruction. The owner must finish
 // all GPU work before destruction. No guest pixels are read back by this helper.
 class Gt7Dlss {
 public:

@@ -78,8 +78,10 @@ def output_quality(input_extent: tuple[int, int], output_extent: tuple[int, int]
     output_extent = extent(output_extent, "output extent")
     if output_extent == input_extent:
         return "dlaa"
+    if input_extent == (1920, 1080) and output_extent == (2560, 1440):
+        return "quality"
     require(output_extent == tuple(2 * n for n in input_extent),
-            "output ratio must be identical dimensions (DLAA) or exactly 2x on both axes (Performance)")
+            "output ratio must be same-size DLAA, exactly 2x Performance, or fixed 1080p to 1440p Quality")
     return "performance"
 
 
@@ -322,7 +324,8 @@ def prepare_capture(capture_dir: Path, output_dir: Path, constants_path: Path,
         "source_capture": str(capture_dir), "constants_source": str(constants_path),
         "constants_schema": constants["schema"], "constants_sha256": sha256(constants_path),
         "constants_requested_output": frames[0]["constants_requested_output"],
-        "mode": "native-size experimental DLAA" if quality == "dlaa" else "2x experimental DLSS SR",
+        "mode": {"dlaa": "native-size experimental DLAA", "performance": "2x experimental DLSS SR",
+                 "quality": "fixed 1080p to 1440p experimental DLSS SR; Quality hint, custom 75% input"}[quality],
         "assumptions": ["Captured inputs retain their actual render dimensions; no CPU resize or downsampling.",
                         "Depth remains reverse-Z float32; no linearization or inversion.",
                         "Color retains captured HDR values without exposure or gamma conversion; alpha is 1.",

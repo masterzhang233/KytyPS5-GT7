@@ -52,8 +52,9 @@ verified as loaded before interpreting the absence of validation messages.
 
 The independent replay path accepts complete TAA input textures from a diagnostic
 capture. It evaluates a persistent NGX feature over consecutive captured frames,
-resetting history only on the first frame. It supports same-size DLAA and exactly
-2x Performance-mode SR, with preset K requested. It neither enables DLSS in the
+resetting history only on the first frame. It supports same-size DLAA, exactly
+2x Performance-mode SR, and fixed 1920x1080-to-2560x1440 SR with a Quality hint,
+with preset K requested. It neither enables DLSS in the
 emulator nor demonstrates in-game performance.
 
 ```powershell
@@ -64,9 +65,12 @@ python tools/dlss_probe/prepare_capture.py <capture-directory> <prepared-directo
 ```
 
 For a genuine 1920 by 1080 capture, add `--output-width 3840 --output-height 2160`
-to the converter to evaluate 4K SR. The converter does not downsample the inputs.
-Sequence v2 records input and output dimensions separately and selects `dlaa` or
-`performance`; the replay still accepts existing same-size v1 sequences. Its
+to the converter to evaluate 4K SR, or `--output-width 2560 --output-height 1440`
+for fixed 1080p-to-1440p SR. The latter uses a custom 75% input ratio with the
+Quality hint, not the standard recommended Quality ratio. The converter does not
+downsample the inputs. Sequence v2 records input and output dimensions separately
+and selects `dlaa`, `performance`, or `quality`; the replay still accepts existing
+same-size v1 sequences. Its
 top-level `quality` capability query is independent of the actual mode recorded
 under `replay.quality`.
 

@@ -25,9 +25,10 @@ bool Gt7Dlss::Composite(CommandBuffer& buffer, const TextureBinding& low_final,
     auto& native_final = cache.GetImage(low_final.image_id);
     auto& target = cache.GetImage(high_target.image_id);
     if (!Shape(native_final, InputWidth, InputHeight, scene_format) ||
-        !Shape(target, OutputWidth, OutputHeight, scene_format) ||
+        !Shape(target, GuestWidth, GuestHeight, scene_format) ||
         !(target.backing.usage & vk::ImageUsageFlagBits::eTransferDst) ||
         !(s.composed->backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+        !(s.graphics.GetFormatProperties(s.output->backing.format).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear) ||
         !(s.graphics.GetFormatProperties(scene_format).optimalTilingFeatures & vk::FormatFeatureFlagBits::eBlitDst) ||
         !(s.graphics.GetFormatProperties(s.composed->backing.format).optimalTilingFeatures & vk::FormatFeatureFlagBits::eBlitSrc)) {
         return reject("unsupported scale backing or format conversion");
@@ -42,15 +43,15 @@ bool Gt7Dlss::Composite(CommandBuffer& buffer, const TextureBinding& low_final,
     std::array<Image*, 4> sampled {s.output.get(), s.effect.get(), &native_final, s.invalid.get()};
     for (auto* image : sampled) Transit(*image, SampledLayout, ShaderRead, command);
     Transit(*s.composed, vk::ImageLayout::eGeneral, ShaderWrite, command);
-    const std::array<uint32_t, 4> push {OutputWidth, OutputHeight, InputWidth, InputHeight};
+    const std::array<uint32_t, 4> push {GuestWidth, GuestHeight, InputWidth, InputHeight};
     const std::array<Image*, 1> storage {s.composed.get()};
-    Dispatch(command, s.composite, sampled, storage, s.linear, push.data(), OutputWidth, OutputHeight);
+    Dispatch(command, s.composite, sampled, storage, s.linear, push.data(), GuestWidth, GuestHeight);
     Transit(*s.composed, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, command);
     Transit(target, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, command);
     vk::ImageBlit region {};
     region.srcSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
     region.dstSubresource = region.srcSubresource;
-    region.srcOffsets[1] = vk::Offset3D {int32_t(OutputWidth), int32_t(OutputHeight), 1};
+    region.srcOffsets[1] = vk::Offset3D {int32_t(GuestWidth), int32_t(GuestHeight), 1};
     region.dstOffsets[1] = region.srcOffsets[1];
     command.blitImage(s.composed->backing.image, vk::ImageLayout::eTransferSrcOptimal,
                       target.backing.image, vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eNearest);
@@ -62,7 +63,7 @@ bool Gt7Dlss::Composite(CommandBuffer& buffer, const TextureBinding& low_final,
     ++s.composites;
     const auto count_for_effects = ++s.composites_by_effect_count[effect_count];
     if (Report(s.composites) || count_for_effects == 1)
-        LOGF("GT7 DLSS: composited #%llu (evaluated=%llu), 1920x1080 -> 3840x2160, effects=%u totals_by_effects=[%llu,%llu,%llu]\n",
+        LOGF("GT7 DLSS: composited #%llu (evaluated=%llu), reconstruction=2560x1440 guest_target=3840x2160, effects=%u totals_by_effects=[%llu,%llu,%llu]\n",
             static_cast<unsigned long long>(s.composites), static_cast<unsigned long long>(s.evaluations), effect_count,
             static_cast<unsigned long long>(s.composites_by_effect_count[0]),
             static_cast<unsigned long long>(s.composites_by_effect_count[1]),

@@ -42,6 +42,13 @@ written to the output directory. The smoke waits on host-owned fences for
 readback; the backend never submits work or waits. Validation layers are not
 enabled by this smoke.
 
+Add `--quality-1440p` to run the same four-frame checks at fixed 1920x1080 input
+and 2560x1440 output with the Quality hint and Preset K. This is a custom 75%
+input ratio, not the runtime's standard Quality recommendation. The report lists
+the actual input, recommendation, supported minimum/maximum and range membership.
+Production backend dimensions and Quality selection already use the existing ABI;
+this option changes only the diagnostic host.
+
 To validate the renderer's actual input-conversion compute shader, compile
 `src/graphics/host_gpu/shaders/gt7_dlss_prepare.comp` with `glslangValidator -V`
 and supply the verified four-frame 1920x1080-to-3840x2160 `gt7.ngx-replay.v2`
@@ -53,6 +60,9 @@ C:/work/dlss-backend-build/kyty_dlss_backend_smoke.exe `
   C:/external/DLSS/lib/Windows_x86_64/rel C:/work/dlss-prepare-check `
   --prepare C:/captures/ngx-sr-inputs/sequence.json C:/work/gt7_dlss_prepare.spv
 ```
+
+The same prepare command also accepts a four-frame 1920x1080-to-2560x1440
+sequence with `quality: "quality"`, selecting the Quality hint for that replay.
 
 This mode uploads the captured raw B10G11R11 color, RG16F motion and depth-aspect
 bytes, executes that shader, then compares every converted color/depth/motion/mask
@@ -85,6 +95,10 @@ alpha must equal one, and each RGB component must be within one FP16 ULP of the
 nearest-even reference. Reports include ULP histograms; CPU/GPU raw images are
 saved. The one-ULP threshold applies to these fixtures, not every possible HDR
 input. This mode does not evaluate NGX or run the game's effect fragment shaders.
+Use `--composite-resized` instead of `--composite` to exercise 21x15 inputs,
+28x20 reconstructed color and 42x30 guest composition, preserving the live
+1080:1440:2160 ratios. The independent reference linearly samples reconstructed
+color as well as the effect/native images and applies the same acceptance checks.
 
 ## Device creation diagnostic
 
