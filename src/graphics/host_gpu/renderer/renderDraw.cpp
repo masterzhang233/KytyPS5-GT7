@@ -3001,7 +3001,95 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					    buffer, &state.ps_input_info, topology, primitive_restart_enable,
 					    state.programs, PipelineDefer::Never, true);
 				}
-				if (!dlss_effect_pipeline) dlss->CancelFrame("unverified scene writer or effect pipeline");
+				if (!dlss_effect_pipeline) {
+					// Keep the original fallback. Record enough of the rejected draw to tell a
+					// different post effect from a known effect with changed geometry/state.
+					// Only four distinct writer signatures can request a full frame capture.
+					static uint64_t rejected_writers = 0;
+					static std::array<uint64_t, 4> captured_writers {};
+					static size_t captured_count = 0;
+					static uint64_t requested_frame = std::numeric_limits<uint64_t>::max();
+					const auto number = ++rejected_writers;
+					const auto& registers = buffer.GetRegisters();
+					const auto& viewport = registers.GetScreenViewport();
+					const auto& v = viewport.viewports[0];
+					const auto scissor = calc_final_scissor(viewport, registers.GetScanModeControl(), {1920, 1080}, 0);
+					const bool full_viewport = Gt7DlssFullViewport(buffer, 1920, 1080);
+					const auto image_count = bindings.pixel ? bindings.pixel->images.size() : 0;
+					const std::array<uint64_t, 24> key {ps, vs, m_gt7_dlss_effects,
+					    uint64_t(topology), draw.index_count, draw.instance_count, uint64_t(direct),
+					    uint64_t(expected), state.color_count, uint64_t(bool(state.depth_info.image_id)),
+					    uint64_t(full_viewport), image_count, uint64_t(draw.IsIndexed()),
+					    emit.first_vertex, emit.first_instance, uint64_t(state.depth_info.depth_test_enable),
+					    uint64_t(mesh_active), vertex_stages.size(), uint64_t(emit.gpu_args_address != 0),
+					    uint64_t(emit.gpu_instance_count_address != 0),
+					    uint64_t(state.depth_info.depth_write_enable), uint64_t(state.depth_info.stencil_test_enable),
+					    uint64_t(state.depth_info.depth_compare_op), uint64_t(bool(bindings.pixel))};
+					auto signature = XXH3_64bits(key.data(), sizeof(key));
+					if (bindings.pixel) {
+						for (const auto& texture : bindings.pixel->images) {
+							const auto& info = texture.desc.info;
+							const auto& view = texture.desc.view_info;
+							const std::array<uint64_t, 14> shape {info.extent.width, info.extent.height,
+							    info.extent.depth, info.samples, uint64_t(texture.desc.type),
+							    uint64_t(view.format), uint64_t(view.type), view.base_level, view.level_count,
+							    view.base_layer, view.layer_count, uint64_t(bool(texture.image_id)),
+							    uint64_t(bool(texture.image_view)), uint64_t(static_cast<VkImageAspectFlags>(view.aspect))};
+							signature = XXH3_64bits_withSeed(shape.data(), sizeof(shape), signature);
+						}
+					}
+					const auto frame = FrameGraph::GpuThreadFrames();
+					const bool new_capture = captured_count < captured_writers.size() &&
+					    std::find(captured_writers.begin(), captured_writers.begin() + captured_count, signature) ==
+					        captured_writers.begin() + captured_count &&
+					    !FrameGraph::Active() && frame != requested_frame;
+					if (new_capture) {
+						captured_writers[captured_count++] = signature;
+						requested_frame = frame;
+						LOGF("GT7 DLSS: requesting writer capture %zu/4 for signature %016" PRIx64
+						     " at guest frame %llu; the next frame may differ\n", captured_count, signature,
+						     static_cast<unsigned long long>(frame));
+						FrameGraph::RequestCapture();
+					}
+					if (number <= 4 || number % 300 == 0 || new_capture) {
+						LOGF("GT7 DLSS: rejected scene writer #%llu signature=%016" PRIx64
+						     " ps=%016" PRIx64 " vs=%016" PRIx64
+						     " effects=%u expected=%u direct=%u indexed=%u vertices=%u instances=%u"
+						     " first=%u/%u topology=%u targets=%u depth=%u textures=%zu full_viewport=%u\n",
+						     static_cast<unsigned long long>(number), signature, ps, vs, m_gt7_dlss_effects,
+						     unsigned(expected), unsigned(direct), unsigned(draw.IsIndexed()), draw.index_count,
+						     draw.instance_count, emit.first_vertex, emit.first_instance, unsigned(topology),
+						     state.color_count, unsigned(bool(state.depth_info.image_id)), image_count,
+						     unsigned(full_viewport));
+						LOGF("GT7 DLSS: writer direct inputs mesh=%u vertex_stages=%zu gpu_args=%u gpu_instances=%u"
+						     " pixel=%u depth_test=%u depth_write=%u stencil_test=%u depth_compare=%u\n",
+						     unsigned(mesh_active), vertex_stages.size(), unsigned(emit.gpu_args_address != 0),
+						     unsigned(emit.gpu_instance_count_address != 0), unsigned(bool(bindings.pixel)),
+						     unsigned(state.depth_info.depth_test_enable), unsigned(state.depth_info.depth_write_enable),
+						     unsigned(state.depth_info.stencil_test_enable), unsigned(state.depth_info.depth_compare_op));
+						LOGF("GT7 DLSS: writer viewport scale=(%g,%g) offset=(%g,%g) transform=0x%x"
+						     " clip_disable=%u scissor=(%d,%d)-(%d,%d)\n", double(v.xscale), double(v.yscale),
+						     double(v.xoffset), double(v.yoffset), viewport.transform_control,
+						     unsigned(registers.GetClipControl().clip_disable), scissor.left, scissor.top,
+						     scissor.right, scissor.bottom);
+						if (bindings.pixel) {
+							for (size_t i = 0; i < std::min<size_t>(image_count, 8); ++i) {
+								const auto& texture = bindings.pixel->images[i];
+								const auto& info = texture.desc.info;
+								const auto& view = texture.desc.view_info;
+								LOGF("GT7 DLSS: writer texture[%zu] present=%u view=%u binding=%u %ux%ux%u"
+								     " samples=%u format=%u type=%u mips=%u+%u layers=%u+%u aspect=0x%x\n",
+								     i, unsigned(bool(texture.image_id)), unsigned(bool(texture.image_view)),
+								     unsigned(texture.desc.type), info.extent.width, info.extent.height,
+								     info.extent.depth, info.samples, unsigned(view.format), unsigned(view.type),
+								     view.base_level, view.level_count, view.base_layer, view.layer_count,
+								     unsigned(view.aspect));
+							}
+						}
+					}
+					dlss->CancelFrame(expected ? "verified scene writer effect pipeline unavailable"
+					                           : "unverified scene writer draw or textures");
+				}
 			} else if (direct && ps == 0x939a0b13ee9531c5ULL && vs == 0xdf39fc07bb648d84ULL &&
 			           m_gt7_dlss_effects <= 2 && draw.index_count == 4 && bindings.pixel &&
 			           topology == vk::PrimitiveTopology::eTriangleStrip &&
@@ -3420,12 +3508,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			effect_command.bindGuestPipeline(dlss_effect_pipeline->pipeline, true);
 			EmitDrawPrimitives(ucfg, effect_command, draw, emit);
 			++m_gt7_dlss_effects;
+			static uint64_t effect_draws = 0;
+			if (const auto number = ++effect_draws; number <= 4 || number % 300 == 0) {
+				LOGF("GT7 DLSS: duplicated effect #%llu layer=%u ps=%016" PRIx64 " vertices=%u\n",
+				     static_cast<unsigned long long>(number), m_gt7_dlss_effects,
+				     state.ps_input_info.stage.program->shader_hash, draw.index_count);
+			}
 		} else {
 			dlss->CancelFrame("effect attachment unavailable or depth clear");
 		}
 	}
 	if (dlss_composite && dlss->Active())
-		(void)dlss->Composite(buffer, bindings.pixel->images[0], state.color_info[0]);
+		(void)dlss->Composite(buffer, bindings.pixel->images[0], state.color_info[0], m_gt7_dlss_effects);
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 }

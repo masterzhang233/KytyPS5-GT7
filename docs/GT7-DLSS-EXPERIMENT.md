@@ -23,6 +23,13 @@ The independent backend also passed a host-owned Vulkan-device smoke test across
 four frames. The host submits and waits; the backend only records GPU commands.
 Its ABI header compiles as C and carries no NVIDIA SDK types or C++ allocations.
 
+The 2026-11-04 race playtest exited normally after 586 seconds. Its periodic logs
+prove at least 13,551 evaluations and 5,400 composites, but also at least 8,100
+cancelled frames. A long interval continued evaluating without any composites;
+this is intermittent coverage, not full-race DLSS support. The player reported
+no obvious visual artifacts. Background shader compilation was still active,
+so this run does not establish performance or complete visual correctness.
+
 ## Experimental render path
 
 1. Match the verified TAA shader pair and complete input/output shapes. Validate
@@ -55,6 +62,12 @@ Skipping a guest frame without evaluation resets NGX history before the next
 accepted temporal pass, because the motion vectors refer to the previous guest frame.
 Only a `composited` log entry confirms an SR result reached the game's 4K scene;
 an `evaluated` entry alone does not.
+Composite diagnostics also count successful frames with zero, one and two scene
+effects, including the first success in each category. Unknown scene writers and
+unavailable effect pipelines are reported separately. Bounded writer diagnostics
+record shader/draw/texture state and automatically request frame-graph captures
+for up to four distinct rejected writer signatures per process. These diagnostics
+do not relax any draw or resource validation.
 
 The temporal hook runs after image discovery/view creation but before the guest
 draw's descriptor commit. `TextureBinding::layout` is still unset at this point;

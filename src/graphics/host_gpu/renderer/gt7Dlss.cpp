@@ -152,6 +152,7 @@ struct Gt7Dlss::Impl {
     ImageId scene_id {};
     GuestRange scene_range {};
     uint64_t evaluations = 0, composites = 0, cancellations = 0, rejected = 0;
+    std::array<uint64_t, 3> composites_by_effect_count {};
     uint64_t boundary_evaluations = 0;
     bool active = false, reset = true, disabled = false, initialized = false;
     std::chrono::steady_clock::time_point last_time {};

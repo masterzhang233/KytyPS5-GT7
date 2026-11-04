@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <span>
 
@@ -25,7 +26,7 @@ public:
     [[nodiscard]] bool MatchesScene(const RenderColorInfo& color) const;
     [[nodiscard]] Image* EffectLayer();
     bool Composite(CommandBuffer& buffer, const TextureBinding& low_final,
-                   const RenderColorInfo& high_target);
+                   const RenderColorInfo& high_target, uint32_t effect_count);
     void CancelFrame(const char* reason, bool invalidate_history = false);
     void FrameBoundary();
 private:

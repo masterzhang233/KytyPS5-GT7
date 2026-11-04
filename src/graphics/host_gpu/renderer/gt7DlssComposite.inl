@@ -1,9 +1,11 @@
 // Included by gt7Dlss.cpp after Impl; private host resources stay in one translation unit.
 bool Gt7Dlss::Composite(CommandBuffer& buffer, const TextureBinding& low_final,
-                        const RenderColorInfo& high_target) {
+                        const RenderColorInfo& high_target, uint32_t effect_count) {
     auto& s = *m_impl;
     if (!Active()) return false;
     const auto reject = [&](const char* reason) { CancelFrame(reason); return false; };
+    if (effect_count >= s.composites_by_effect_count.size())
+        return reject("unsupported scene effect count");
     const auto rgb_identity = [](const vk::ComponentMapping& mapping) {
         return (mapping.r == vk::ComponentSwizzle::eIdentity || mapping.r == vk::ComponentSwizzle::eR) &&
                (mapping.g == vk::ComponentSwizzle::eIdentity || mapping.g == vk::ComponentSwizzle::eG) &&
@@ -57,7 +59,13 @@ bool Gt7Dlss::Composite(CommandBuffer& buffer, const TextureBinding& low_final,
     Transit(target, target_state.layout, target_state.access_mask, command);
     cache.MarkGpuWritten(high_target.image_id);
     s.active = false;
-    if (Report(++s.composites)) LOGF("GT7 DLSS: composited #%llu (evaluated=%llu), 1920x1080 -> 3840x2160\n",
-        static_cast<unsigned long long>(s.composites), static_cast<unsigned long long>(s.evaluations));
+    ++s.composites;
+    const auto count_for_effects = ++s.composites_by_effect_count[effect_count];
+    if (Report(s.composites) || count_for_effects == 1)
+        LOGF("GT7 DLSS: composited #%llu (evaluated=%llu), 1920x1080 -> 3840x2160, effects=%u totals_by_effects=[%llu,%llu,%llu]\n",
+            static_cast<unsigned long long>(s.composites), static_cast<unsigned long long>(s.evaluations), effect_count,
+            static_cast<unsigned long long>(s.composites_by_effect_count[0]),
+            static_cast<unsigned long long>(s.composites_by_effect_count[1]),
+            static_cast<unsigned long long>(s.composites_by_effect_count[2]));
     return true;
 }
