@@ -5,6 +5,9 @@ It is disabled by default and is not part of the launcher's supported settings.
 The normal emulator build does not link NVIDIA NGX. Its optional C ABI backend is
 built separately in `tools/dlss_backend` with an external NVIDIA SDK/runtime.
 No game data, SDK files or generated captures belong in this repository.
+The local test runtime inspected on 2026-11-04 reports DLL product version
+`310.9.16.0`. The backend requests transformer preset K in Performance mode.
+This integration implements Super Resolution only, with no frame generation.
 
 ## Evidence and limits
 
@@ -36,8 +39,11 @@ Its ABI header compiles as C and carries no NVIDIA SDK types or C++ allocations.
    HDR. Preserve the original low-resolution final color as the spatial fallback
    for invalid-motion regions. The existing 4K tone mapping and UI then run.
 
-The first prototype accepts a narrow observed sequence: one blur draw, one
-30-vertex overlay draw and one four-vertex scale draw. The scale quad, white tint,
+The prototype accepts a narrow observed sequence: an optional blur draw, an
+optional following 30-vertex overlay draw and one four-vertex scale draw. Every
+scene writer that actually occurs must be verified; the scale draw may follow
+zero, one or two accepted effects. An untouched effect layer has `P=A=0`, so
+omitting effects is compatible with the same composite equation. The scale quad, white tint,
 identity matrix and linear normalized clamp sampler are checked at runtime.
 Unexpected scene writers or shapes must discard the private result. A missing
 backend, unsupported device or unmatched pass leaves the original render path.
@@ -49,6 +55,14 @@ Skipping a guest frame without evaluation resets NGX history before the next
 accepted temporal pass, because the motion vectors refer to the previous guest frame.
 Only a `composited` log entry confirms an SR result reached the game's 4K scene;
 an `evaluated` entry alone does not.
+
+The temporal hook runs after image discovery/view creation but before the guest
+draw's descriptor commit. `TextureBinding::layout` is still unset at this point;
+checking it rejected every temporal pass in the first race playtest. The helper
+now validates and restores the actual backing layout of color, depth and motion.
+The matched history image is not read by the helper and need not be initialized
+on the first frame. `KYTY_GT7_DLSS_TRACE=1` requests one frame-graph capture after
+the first successful evaluation to inspect the subsequent effect/scale sequence.
 
 The effect-layer equation is exact at the same low-resolution sample in real
 arithmetic. Separately interpolating `P` and `A` at 4K is not pixel-identical to

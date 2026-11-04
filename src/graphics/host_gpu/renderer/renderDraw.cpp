@@ -3003,13 +3003,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				}
 				if (!dlss_effect_pipeline) dlss->CancelFrame("unverified scene writer or effect pipeline");
 			} else if (direct && ps == 0x939a0b13ee9531c5ULL && vs == 0xdf39fc07bb648d84ULL &&
-			           m_gt7_dlss_effects == 2 && draw.index_count == 4 && bindings.pixel &&
+			           m_gt7_dlss_effects <= 2 && draw.index_count == 4 && bindings.pixel &&
 			           topology == vk::PrimitiveTopology::eTriangleStrip &&
 			           bindings.pixel->images.size() == 1 && state.color_count == 1 &&
 			           !state.depth_info.image_id && !buffer.GetRegisters().GetBlendControl(0).enable &&
 			           (render_target_mask_slot(buffer.GetRegisters().GetRenderTargetMask(), 0) & 0x7u) == 0x7u &&
 		           Gt7DlssFullViewport(buffer, 3840, 2160) &&
 		           Gt7DlssDrawChecks::ValidScaleQuad(m_context, state.vertex_info[0], *bindings.pixel)) {
+				// Effects are optional: a cleared layer has P=A=0. Every scene writer
+				// that did occur must still have passed the blur/overlay checks above.
 				dlss_composite = true; // Helper validates source identity and destination backing before writing.
 			}
 		}

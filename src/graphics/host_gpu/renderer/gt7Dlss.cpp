@@ -3,6 +3,7 @@
 #include "graphics/host_gpu/gt7DlssDevice.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandRecorder.h"
+#include "graphics/host_gpu/renderer/frameGraph.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 
 namespace Libs::Graphics {
@@ -156,6 +158,9 @@ struct Gt7Dlss::Impl {
 
     ~Impl() {
         // RenderContext owns this object and has already finished its scheduler.
+        LOGF("GT7 DLSS: session summary: evaluated=%llu composited=%llu cancelled=%llu rejected=%llu\n",
+            static_cast<unsigned long long>(evaluations), static_cast<unsigned long long>(composites),
+            static_cast<unsigned long long>(cancellations), static_cast<unsigned long long>(rejected));
         if (ngx) {
             KytyDlssError error {};
             const auto result = api->destroy_context(ngx, 1, &error);
@@ -282,10 +287,12 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     for (size_t i = 0; i < 4; ++i) {
         const auto& texture = pixel.images[i];
         const auto& resource = program.info.images[i];
-        if (!texture.image_id || !texture.image_view || !BaseView(texture.desc) ||
-            texture.layout == vk::ImageLayout::eUndefined || resource.written ||
-            resource.bindless || resource.runtime)
-            return s.Reject("unsupported temporal texture view");
+        if (!texture.image_id || !texture.image_view)
+            return s.Reject("unresolved temporal texture view");
+        if (!BaseView(texture.desc))
+            return s.Reject("unsupported temporal texture subresource");
+        if (resource.written || resource.bindless || resource.runtime)
+            return s.Reject("unverified temporal resource access");
     }
     for (const auto& target : colors) {
         if (!target.image_id || !BaseView(target.desc) || target.guest_mip_level || target.guest_array_layer)
@@ -308,6 +315,15 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
         colors[0].image_id == pixel.images[3].image_id ||
         colors[1].image_id == pixel.images[2].image_id)
         return s.Reject("not the verified 1080p temporal resources");
+
+    // This hook runs after RebindImages but before CommitBindings, which is what
+    // fills TextureBinding::layout for the guest draw. Use the tracked backing
+    // state of the three images sampled here. History is only matched, not read
+    // by this helper, and can still be uninitialized on the first guest frame.
+    if (source_color.backing.state.layout == vk::ImageLayout::eUndefined ||
+        source_depth.backing.state.layout == vk::ImageLayout::eUndefined ||
+        source_motion.backing.state.layout == vk::ImageLayout::eUndefined)
+        return s.Reject("uninitialized temporal input image state");
 
     const auto& source = pixel.buffer_sources[0];
     constexpr uint64_t ConstantBytes = 128;
@@ -337,7 +353,6 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     std::array<vk::ImageView, 3> views {};
     for (size_t i = 0; i < inputs.size(); ++i) {
         saved[i] = inputs[i]->backing.state;
-        saved[i].layout = pixel.images[indices[i]].layout;
         views[i] = pixel.images[indices[i]].image_view;
         Transit(*inputs[i], SampledLayout, ShaderRead, command);
     }
@@ -391,6 +406,13 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     s.last_time = now;
     s.reset = false;
     s.active = true;
+    if (s.evaluations == 1) {
+        const auto* trace = std::getenv("KYTY_GT7_DLSS_TRACE");
+        if (trace && trace[0] == '1' && trace[1] == '\0') {
+            FrameGraph::RequestCapture();
+            LOGF("GT7 DLSS: requested frame-graph trace after first evaluation\n");
+        }
+    }
     if (Report(s.evaluations)) LOGF("GT7 DLSS: evaluated #%llu 1920x1080 -> 3840x2160, jitter=(%.6f,%.6f), reset=%u\n",
         static_cast<unsigned long long>(s.evaluations), evaluate.jitter_x, evaluate.jitter_y, result.reset_used);
     return true;
