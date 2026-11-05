@@ -22,6 +22,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/gt7FrameGen.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "graphics/vr/openvrBridge.h"
 #include "graphics/vr/vrEyeImage.h"
@@ -51,6 +52,8 @@ namespace Libs::Graphics {
 
 struct Presenter::Frame {
 	VulkanImage   image;
+	Gt7FrameGen::FrameInputs frame_generation;
+	VulkanImage   hudless_display;
 	vk::ImageView view         = nullptr;
 	uint64_t      present_tick = 0;
 	uint64_t      vr_present_tick = 0;
@@ -66,6 +69,8 @@ struct Presenter::Frame {
 	void Transit(vk::CommandBuffer command, vk::ImageLayout layout, vk::AccessFlags2 access);
 	void CopyFrom(CommandBuffer& command, Image& source, uint32_t base_layer = 0, bool convert = false);
 	void Clear(CommandBuffer& command, const vk::ClearColorValue& color);
+	const VulkanImage* PrepareHudless(GraphicContext& graphics, vk::CommandBuffer command,
+	                                  vk::Extent2D extent, vk::Format format);
 };
 
 class FramePool final {
@@ -78,6 +83,7 @@ public:
 	}
 	~FramePool() {
 		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
+		Gt7FrameGen::WaitForPresents(m_window.graphic_ctx);
 		if (m_vr_master) {
 			m_vr_master->Wait(m_vr_master->CurrentTick() - 1);
 		}
@@ -85,6 +91,10 @@ public:
 			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
 			if (frame->image.image != nullptr) {
 				m_window.graphic_ctx.DeleteImage(frame->image);
+			}
+			for (auto* input: {&frame->frame_generation.depth, &frame->frame_generation.motion,
+			                   &frame->frame_generation.hudless_color, &frame->hudless_display}) {
+				if (input->image != nullptr) m_window.graphic_ctx.DeleteImage(*input);
 			}
 		}
 	}
@@ -152,6 +162,9 @@ public:
 		m_mutex.Unlock();
 
 		WaitForPresent(*frame);
+		// This allocation can next be used for a movie, blank or VR frame.
+		frame->frame_generation.valid = false;
+		frame->frame_generation.hudless_valid = false;
 		return frame;
 	}
 
@@ -311,6 +324,81 @@ void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout
 	command.pipelineBarrier2(dependency);
 	image.state = {stage, access, layout};
 	image.subresource_states.clear();
+}
+
+const VulkanImage* Presenter::Frame::PrepareHudless(GraphicContext& graphics,
+    vk::CommandBuffer command, vk::Extent2D extent, vk::Format format) {
+	auto& source = frame_generation.hudless_color;
+	if (!frame_generation.valid || !frame_generation.hudless_valid || source.image == nullptr ||
+	    source.extent != image.extent || source.format != image.format || source.layers != 1 ||
+	    source.mip_levels != 1 || source.samples != 1 ||
+	    source.state.layout == vk::ImageLayout::eUndefined ||
+	    !(source.usage & vk::ImageUsageFlagBits::eTransferSrc)) return nullptr;
+	const auto source_features = vk::FormatFeatureFlagBits::eBlitSrc |
+	                             vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+	const auto destination_features = vk::FormatFeatureFlagBits::eBlitDst |
+	                                  vk::FormatFeatureFlagBits::eSampledImage |
+	                                  vk::FormatFeatureFlagBits::eTransferSrc |
+	                                  vk::FormatFeatureFlagBits::eTransferDst;
+	if ((graphics.GetFormatProperties(source.format).optimalTilingFeatures & source_features) != source_features ||
+	    (graphics.GetFormatProperties(format).optimalTilingFeatures & destination_features) != destination_features)
+		return nullptr;
+	auto& destination = hudless_display;
+	if (destination.image == nullptr || destination.extent != vk::Extent3D {extent.width, extent.height, 1} ||
+	    destination.format != format) {
+		// Pool reuse waits the post-QueuePresent retirement tick. Resize recovery
+		// also drains the proxy before a retained frame can change this allocation.
+		if (destination.image != nullptr) graphics.DeleteImage(destination);
+		vk::ImageCreateInfo create {};
+		create.imageType = vk::ImageType::e2D;
+		create.format = format;
+		create.extent = vk::Extent3D {extent.width, extent.height, 1};
+		create.mipLevels = create.arrayLayers = 1;
+		create.samples = vk::SampleCountFlagBits::e1;
+		create.tiling = vk::ImageTiling::eOptimal;
+		// The SDK also copies HUDLessColor into its previous-frame history.
+		create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
+		               vk::ImageUsageFlagBits::eSampled;
+		create.sharingMode = vk::SharingMode::eExclusive;
+		if (!graphics.CreateImage(create, destination)) return nullptr;
+	}
+	const auto transit = [&](VulkanImage& target, vk::ImageLayout layout,
+	                         vk::AccessFlags2 access, vk::PipelineStageFlags2 stage) {
+		vk::ImageMemoryBarrier2 barrier {};
+		barrier.srcStageMask = target.state.pl_stage;
+		barrier.srcAccessMask = target.state.access_mask;
+		barrier.dstStageMask = stage;
+		barrier.dstAccessMask = access;
+		barrier.oldLayout = target.state.layout;
+		barrier.newLayout = layout;
+		barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = target.image;
+		barrier.subresourceRange = vk::ImageSubresourceRange {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		vk::DependencyInfo dependency {};
+		dependency.imageMemoryBarrierCount = 1;
+		dependency.pImageMemoryBarriers = &barrier;
+		command.pipelineBarrier2(dependency);
+		target.state = {stage, access, layout};
+		target.subresource_states.clear();
+	};
+	const auto saved = source.state;
+	transit(source, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
+	        vk::PipelineStageFlagBits2::eTransfer);
+	transit(destination, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite,
+	        vk::PipelineStageFlagBits2::eTransfer);
+	vk::ImageBlit region {};
+	region.srcSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+	region.dstSubresource = region.srcSubresource;
+	region.srcOffsets[1] = vk::Offset3D {int32_t(source.extent.width), int32_t(source.extent.height), 1};
+	region.dstOffsets[1] = vk::Offset3D {int32_t(extent.width), int32_t(extent.height), 1};
+	// Match the final game's backbuffer blit exactly, including UNORM conversion
+	// and linear filtering. Different color transforms would classify the scene as UI.
+	command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
+	                  destination.image, vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eLinear);
+	transit(source, saved.layout, saved.access_mask, saved.pl_stage);
+	transit(destination, vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
+	        vk::PipelineStageFlagBits2::eAllCommands);
+	return &destination;
 }
 
 void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source, uint32_t base_layer, bool convert) {
@@ -571,6 +659,7 @@ public:
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
 		return static_cast<uint32_t>(m_images.size());
 	}
+	[[nodiscard]] bool UsesFrameGeneration() const noexcept { return m_frame_generation; }
 	[[nodiscard]] vk::Format Format() const noexcept { return m_format; }
 
 private:
@@ -579,6 +668,7 @@ private:
 
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
+	bool             m_frame_generation = false;
 	vk::Format       m_format = vk::Format::eUndefined;
 	vk::Extent2D     m_extent {};
 	// Drawable pixel size observed when this swapchain was created.
@@ -743,13 +833,25 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
-	                     "vkCreateSwapchainKHR");
+	if (Gt7FrameGen::Requested()) {
+		const auto result = Gt7FrameGen::CreateSwapchain(graphics, create_info, &m_handle);
+		m_frame_generation = result == vk::Result::eSuccess;
+		if (!m_frame_generation) {
+			LOGF("GT7 FSR FG: proxy unavailable (%s), using ordinary presentation\n",
+			     vk::to_string(result).c_str());
+		}
+	}
+	if (!m_frame_generation) {
+		RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
+		                     "vkCreateSwapchainKHR");
+	}
 	EXIT_IF(m_handle == nullptr);
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
-		    return graphics.device.getSwapchainImagesKHR(m_handle, count, images);
+		    return m_frame_generation
+		               ? Gt7FrameGen::GetSwapchainImages(graphics.device, m_handle, count, images)
+		               : graphics.device.getSwapchainImagesKHR(m_handle, count, images);
 	    });
 	EXIT_NOT_IMPLEMENTED(m_images.empty());
 	LOGF("Swapchain: %ux%u, %zu images (%u asked), present mode %s\n", m_extent.width,
@@ -812,6 +914,11 @@ void Swapchain::Destroy() {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
 		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
+	// The proxy has private interpolation/presentation queues and worker threads.
+	// Retire them before freeing semaphores or views they may still reference.
+	if (m_frame_generation && m_handle != nullptr) {
+		Gt7FrameGen::WaitForPresents(graphics);
+	}
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
 	}
@@ -844,9 +951,11 @@ void Swapchain::Destroy() {
 		}
 	}
 	if (m_handle != nullptr) {
-		graphics.device.destroySwapchainKHR(m_handle, nullptr);
+		if (m_frame_generation) Gt7FrameGen::DestroySwapchain(graphics, m_handle);
+		else graphics.device.destroySwapchainKHR(m_handle, nullptr);
 	}
 
+	m_frame_generation = false;
 	m_handle        = nullptr;
 	m_format        = vk::Format::eUndefined;
 	m_extent        = {};
@@ -902,9 +1011,12 @@ static bool AcquireWithFence() {
 Swapchain::Status Swapchain::AcquireNextImage() {
 	EXIT_IF(m_handle == nullptr || m_frame_index >= m_image_acquired.size());
 	m_image_index     = static_cast<uint32_t>(-1);
-	const bool fence  = AcquireWithFence() && m_acquire_fence != nullptr;
+	const bool fence  = !m_frame_generation && AcquireWithFence() && m_acquire_fence != nullptr;
 	const auto begin  = StallWatch::NowNs();
-	const auto result = m_window.graphic_ctx.device.acquireNextImageKHR(
+	const auto result = m_frame_generation ? Gt7FrameGen::AcquireNextImage(
+	    m_window.graphic_ctx.device, m_handle, std::numeric_limits<uint64_t>::max(),
+	    m_image_acquired[m_frame_index], &m_image_index)
+	    : m_window.graphic_ctx.device.acquireNextImageKHR(
 	    m_handle, std::numeric_limits<uint64_t>::max(),
 	    fence ? vk::Semaphore {} : m_image_acquired[m_frame_index],
 	    fence ? m_acquire_fence : vk::Fence {}, &m_image_index);
@@ -1080,8 +1192,26 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
 	EXIT_IF(m_image_index >= m_images.size());
 	auto       vk_command      = command.Handle();
+	if (m_frame_generation) {
+		// The input copies belong to this exact guest frame. A redraw of an old
+		// frame, a missing input or an active overlay is presented without FG.
+		const auto* inputs = source != nullptr && overlay.frame == nullptr && !draw_system_overlay
+		                         ? &source->frame_generation : nullptr;
+		const auto* hudless = inputs != nullptr
+		    ? source->PrepareHudless(m_window.graphic_ctx, vk_command, m_extent, m_format) : nullptr;
+		Gt7FrameGen::RecordPrepare(m_window.graphic_ctx, vk_command, inputs,
+		                           vk::Rect2D {{0, 0}, m_extent}, hudless);
+		command.GetScheduler().StateShadow().InvalidateAll();
+	}
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
+	// FidelityFX exposes ordinary replacement images, which it samples or copies
+	// before presenting its real swapchain. Its handoff contract is shader-read,
+	// including passthrough frames; only native swapchain images use PRESENT_SRC.
+	const auto handoff_layout = m_frame_generation ? vk::ImageLayout::eShaderReadOnlyOptimal
+	                                               : vk::ImageLayout::ePresentSrcKHR;
+	const auto handoff_access = m_frame_generation ? vk::AccessFlagBits::eShaderRead
+	                                               : vk::AccessFlagBits::eMemoryRead;
 	if (source != nullptr) {
 		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
 		                vk::AccessFlagBits2::eTransferRead);
@@ -1139,10 +1269,10 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	to_present.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
 	to_present.dstAccessMask       = draw_attachment ? vk::AccessFlagBits::eColorAttachmentRead |
 	                                                       vk::AccessFlagBits::eColorAttachmentWrite
-	                                                 : vk::AccessFlagBits::eMemoryRead;
+	                                                 : handoff_access;
 	to_present.oldLayout           = vk::ImageLayout::eTransferDstOptimal;
 	to_present.newLayout           = draw_attachment ? vk::ImageLayout::eColorAttachmentOptimal
-	                                                 : vk::ImageLayout::ePresentSrcKHR;
+	                                                 : handoff_layout;
 	to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	to_present.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	to_present.image               = m_images[m_image_index];
@@ -1172,9 +1302,9 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 			m_system_overlay->Record(vk_command, m_image_views[m_image_index]);
 		}
 		to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-		to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
+		to_present.dstAccessMask = handoff_access;
 		to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
-		to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
+		to_present.newLayout     = handoff_layout;
 		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
 		                           vk::PipelineStageFlagBits::eAllCommands,
 		                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
@@ -1207,7 +1337,9 @@ Swapchain::Status Swapchain::Present() {
 	const auto begin = StallWatch::NowNs();
 	{
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
-		result = m_window.graphic_ctx.queue.presentKHR(&present);
+		result = m_frame_generation
+		             ? Gt7FrameGen::QueuePresent(m_window.graphic_ctx.queue, present)
+		             : m_window.graphic_ctx.queue.presentKHR(&present);
 	}
 	const auto end = StallWatch::NowNs();
 	StallWatch::NoteSection(StallWatch::Section::Present, begin, end, m_image_index);
@@ -1244,10 +1376,13 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	}
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
+	auto& image = m_impl->ResolveSurface(info);
 	// End an incomplete private sequence on the GPU recording thread. The separate
 	// presentation thread's frame counter is not a boundary for recorded commands.
-	if (auto* dlss = m_impl->renderer.GetGt7Dlss()) dlss->FrameBoundary();
-	auto& image = m_impl->ResolveSurface(info);
+	if (auto* dlss = m_impl->renderer.GetGt7Dlss()) {
+		dlss->CopyFrameGenerationInputs(buffer, frame->frame_generation, image);
+		dlss->FrameBoundary();
+	}
 	constexpr uint32_t presented_layer = 0; // Match the existing desktop CopyFrom layer.
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
@@ -1583,6 +1718,17 @@ void Presenter::Impl::Present() {
 			}
 		}
 		status = swapchain.Present();
+		if (swapchain.UsesFrameGeneration()) {
+			// HUD-less color is read by the generation commands submitted inside
+			// QueuePresent, after our earlier prepare/blit submission. Retire those
+			// reads on the same graphics queue before this frame can be reused.
+			Common::LockGuard render_lock(renderer.GetMutex());
+			present_scheduler.BeginCommand();
+			const auto tick = present_scheduler.Submit();
+			for (const auto& layer: layers) {
+				if (layer.frame != nullptr) layer.frame->present_tick = tick;
+			}
+		}
 		if (status != Swapchain::Status::Success) {
 			RecoverSwapchain(status);
 			continue;
@@ -1593,9 +1739,11 @@ void Presenter::Impl::Present() {
 		return;
 	}
 	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
+	Gt7FrameGen::NoteDroppedFrame();
 }
 
 void Presenter::Discard(Frame& frame) {
+	if (frame.frame_generation.valid) Gt7FrameGen::NoteDroppedFrame();
 	m_impl->frames.Release(&frame);
 }
 

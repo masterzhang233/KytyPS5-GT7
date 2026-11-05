@@ -26,6 +26,10 @@
 #include <QMessageBox>
 #include <QObject>
 #include <QPointer>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QPixmap>
+#include <QSignalBlocker>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -212,10 +216,10 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 		        }
 	        });
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
-	connect(m_ui->gt7_start_vr_button, &QPushButton::clicked, m_ui->widget,
-	        &ConfigurationListWidget::StartGt7Vr);
-	connect(m_ui->gt7_settings_button, &QPushButton::clicked, m_ui->widget,
-	        &ConfigurationListWidget::ConfigureGt7Rendering);
+	connect(m_ui->gt7_start_button, &QPushButton::clicked, this, &MainDialogPrivate::Run);
+	m_ui->gt7_dlss_checkbox->setChecked(m_ui->widget->Gt7DlssEnabled());
+	connect(m_ui->gt7_dlss_checkbox, &QCheckBox::toggled, m_ui->widget,
+	        &ConfigurationListWidget::SetGt7DlssEnabled);
 	QDir().mkpath(LauncherDiagnostics::LogsRoot());
 	m_logs_path_label = new QLabel(
 	    tr("Diagnostic logs: %1").arg(QDir::toNativeSeparators(LauncherDiagnostics::LogsRoot())),
@@ -223,6 +227,9 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	m_logs_path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
 	m_logs_path_label->setWordWrap(true);
 	m_ui->verticalLayout_4->insertWidget(0, m_logs_path_label);
+	m_logs_path_label->hide();
+	m_ui->label_settings_file->hide();
+	m_ui->label_Interpreter->hide();
 	auto* support_layout = new QHBoxLayout;
 	m_open_logs_button   = new QPushButton(tr("Open log folder"), main_dialog);
 	m_copy_log_button    = new QPushButton(tr("Copy latest log path"), main_dialog);
@@ -332,8 +339,10 @@ void MainDialogPrivate::FindInterpreter() {
 		auto lines  = output.split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts);
 
 		if (lines.count() >= 2) {
-			m_ui->label_Version->setText(
-			    tr("Version: ") + (lines.at(0).startsWith("exe_name") ? lines.at(1) : lines.at(0)));
+			m_ui->label_Version->setText(QStringLiteral("Tohi-GT7 1.0.0"));
+			m_ui->label_Version->setToolTip(
+			    tr("Version: ") + (lines.at(0).startsWith("exe_name") ? lines.at(1) : lines.at(0)) +
+			    QStringLiteral("\n") + m_interpreter);
 		} else {
 			found = false;
 		}
@@ -564,9 +573,16 @@ static QString BuildWinCmdKCommand(const QString& interpreter, const QStringList
 }
 #endif
 
-void MainDialog::RunInterpreter(QProcess* process, const Configuration& info,
+void MainDialog::RunInterpreter(QProcess* process, const Configuration& requested_info,
                                 LauncherDiagnostics::Run* diagnostics) {
 	const auto& interpreter = m_p->GetInterpreter();
+	Configuration info;
+	info.CopyGameInfoFrom(requested_info);
+	info.CopyEmulatorSettingsFrom(requested_info);
+	info.controller = requested_info.controller;
+	info.basedir = requested_info.basedir;
+	info.elf = requested_info.elf;
+	ApplyGt7DesktopPreset(info);
 
 	QFileInfo f(interpreter);
 	auto      dir = f.absoluteDir();
@@ -580,13 +596,35 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info,
 		}
 		QMessageBox::critical(
 		    this, tr("GT7 profile conflict"),
-		    tr("Disable the custom game patches before using GT7 internal rendering or SteamVR. "
+		    tr("Disable the custom game patches before using the GT7 graphics preset. "
 		       "These profiles require their own verified patch plan."));
 		return;
 	}
 
+	const auto environment = Gt7LaunchEnvironment(info, dir.absolutePath(),
+	                                               QProcessEnvironment::systemEnvironment());
+	process->setProcessEnvironment(environment);
+	if (gt7_title && info.gt7_dlss_enabled) {
+		QStringList missing;
+		for (const auto* name: {"kyty_dlss_backend.dll", "nvngx_dlss.dll", "amd_fidelityfx_vk.dll"}) {
+			if (!QFileInfo::exists(dir.absoluteFilePath(QString::fromLatin1(name)))) {
+				missing << QString::fromLatin1(name);
+			}
+		}
+		if (!missing.isEmpty()) {
+			const auto detail = tr("The DLSS preset needs the complete Tohi-GT7 release package.\n"
+			                       "Missing files: %1\n\nExtract the full package, or turn off DLSS.")
+			                        .arg(missing.join(QStringLiteral(", ")));
+			if (diagnostics != nullptr) {
+				diagnostics->RecordRejected(QStringLiteral("graphics_runtime"), detail);
+			}
+			QMessageBox::critical(this, tr("Graphics runtime missing"), detail);
+			return;
+		}
+	}
 	auto args = CreateEmulatorArgs(
-	    info, diagnostics != nullptr ? diagnostics->EmulatorLogPath() : QString {});
+	    info, diagnostics != nullptr && !gt7_title
+	              ? diagnostics->EmulatorLogPath() : QString {});
 	if (args.isEmpty()) {
 		if (diagnostics != nullptr) {
 			diagnostics->RecordRejected(QStringLiteral("configuration"),
@@ -603,6 +641,7 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info,
 		check.setProgram(interpreter);
 		check.setArguments(args + QStringList {QStringLiteral("--gt7-check-only")});
 		check.setWorkingDirectory(dir.path());
+		check.setProcessEnvironment(environment);
 		QProgressDialog progress(tr("Checking GT7 version and patch compatibility..."),
 		                         tr("Cancel"), 0, 0, this);
 		progress.setWindowModality(Qt::WindowModal);
@@ -765,6 +804,22 @@ void MainDialog::ReadSettings(QSettings& s) {
 	MainDialogPrivate::ReadSettings(s);
 }
 
+void MainDialog::paintEvent(QPaintEvent* event) {
+	QDialog::paintEvent(event);
+	static const QPixmap wallpaper(QStringLiteral(":/images/gt7-wallpaper.jpg"));
+	QPainter painter(this);
+	painter.setRenderHint(QPainter::SmoothPixmapTransform);
+	if (!wallpaper.isNull()) {
+		const auto scale = qMax(double(width()) / wallpaper.width(),
+		                        double(height()) / wallpaper.height());
+		const QSizeF scaled(wallpaper.width() * scale, wallpaper.height() * scale);
+		const QRectF target((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
+		                    scaled.width(), scaled.height());
+		painter.drawPixmap(target, wallpaper, QRectF(wallpaper.rect()));
+	}
+	painter.fillRect(rect(), QColor(5, 8, 14, 145));
+}
+
 void MainDialog::resizeEvent(QResizeEvent* event) {
 	emit Resize();
 	QDialog::resizeEvent(event);
@@ -803,6 +858,7 @@ void MainDialogPrivate::Run() {
 	m_lightbar.Stop();
 
 	auto info = m_ui->widget->CreateConfiguration(*m_running_item);
+	ApplyGt7DesktopPreset(*info);
 	const bool gt7_title =
 	    info->title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
 	if (gt7_title) {
@@ -810,8 +866,8 @@ void MainDialogPrivate::Run() {
 		details.title_id          = info->title_id;
 		details.game_version      = info->gameVersion;
 		details.output_resolution = EnumToText(info->screen_resolution);
-		details.mode               = info->gt7_vr_enabled ? QStringLiteral("SteamVR")
-		                                                   : QStringLiteral("Desktop");
+		details.mode = info->gt7_dlss_enabled ? QStringLiteral("Desktop DLSS + FSR 2x")
+		                                      : QStringLiteral("Desktop");
 		details.desktop_height = info->gt7_desktop_height;
 		details.vr_scale       = info->gt7_vr_scale;
 		details.gpu_index      = info->gpu_index;
@@ -851,26 +907,23 @@ void MainDialogPrivate::Update() {
 	m_ui->widget->SetRunEnabled(run_enabled);
 	const bool gt7_selected = item != nullptr &&
 	    item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"), Qt::CaseInsensitive) == 0;
-	m_ui->gt7_start_vr_button->setEnabled(run_enabled && gt7_selected);
-	m_ui->gt7_settings_button->setEnabled(run_enabled && gt7_selected);
+	m_ui->gt7_start_button->setEnabled(run_enabled && gt7_selected);
+	m_ui->gt7_start_button->setText(m_process.state() == QProcess::NotRunning
+	                                  ? tr("Start game") : tr("Running..."));
+	m_ui->gt7_dlss_checkbox->setEnabled(m_process.state() == QProcess::NotRunning);
+	{
+		const QSignalBlocker blocker(m_ui->gt7_dlss_checkbox);
+		m_ui->gt7_dlss_checkbox->setChecked(m_ui->widget->Gt7DlssEnabled());
+	}
 	const bool has_logs = !LauncherDiagnostics::LatestRunDirectory().isEmpty();
 	m_copy_log_button->setEnabled(has_logs);
 	m_export_logs_button->setEnabled(has_logs);
-	if (gt7_selected) {
-		const auto info = m_ui->widget->CreateConfiguration(*item);
-		const auto output = EnumToText(info->screen_resolution);
-		const auto desktop = info->gt7_desktop_height == 0
-		                         ? tr("Native") : tr("%1p nominal").arg(info->gt7_desktop_height);
-		m_ui->gt7_feature_summary->setText(
-		    info->gt7_vr_enabled
-		        ? tr("SteamVR · internal eye scale %1% · desktop output %2")
-		              .arg(info->gt7_vr_scale).arg(output)
-		        : tr("Desktop · internal 3D %1 · window output %2 · VR preset %3%")
-		              .arg(desktop, output).arg(info->gt7_vr_scale));
-	} else {
-		m_ui->gt7_feature_summary->setText(
-		    tr("Select GT7 to configure internal 3D resolution or launch SteamVR."));
-	}
+	m_ui->gt7_feature_summary->setText(
+	    m_ui->widget->Gt7DlssEnabled()
+	        ? tr("1920 x 1080 → 2560 x 1440 · DLSS + FSR 2x frame generation")
+	        : tr("DLSS and frame generation off · desktop rendering"));
+	m_ui->gt7_start_button->setToolTip(
+	    gt7_selected ? QString {} : tr("Select Gran Turismo 7 in the game library to start."));
 	if (m_process.state() != QProcess::NotRunning) {
 		m_lightbar.Stop();
 		return;

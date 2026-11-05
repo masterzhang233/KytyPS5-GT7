@@ -20,8 +20,10 @@ class BufferCache;
 // to shader-dumps/<stage>_<hash>.bin, with a .txt beside it.
 namespace Libs::Graphics::FrameGraph {
 
-// Any thread: capture the next frame.
-void RequestCapture();
+enum class CaptureRequest { Automatic, Manual };
+// Any thread: capture the next frame. KYTY_FG_MANUAL_ONLY=1 ignores automatic and
+// scheduled requests; F9's explicit Manual request still captures KYTY_FG_FRAMES frames.
+void RequestCapture(CaptureRequest request = CaptureRequest::Automatic);
 // GPU thread, at each guest frame end (a suspend point): starts and ends captures.
 void OnFrameBoundary(BufferCache& cache);
 // GPU thread: the guest frames it has ended (suspend points it has processed).

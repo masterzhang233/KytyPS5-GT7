@@ -129,6 +129,7 @@ public:
 	bool                   bindless_images_enabled     = true;
 	bool                   reflections_half_rate       = false;
 	int                    gt7_desktop_height          = 0; // 0 keeps the game's native controller.
+	bool                   gt7_dlss_enabled            = true;
 	bool                   gt7_vr_enabled              = false;
 	int                    gt7_vr_scale                = 100;
 	QString                skip_shader_hashes;
@@ -168,6 +169,7 @@ public:
 		bindless_images_enabled     = other.bindless_images_enabled;
 		reflections_half_rate       = other.reflections_half_rate;
 		gt7_desktop_height          = other.gt7_desktop_height;
+		gt7_dlss_enabled            = other.gt7_dlss_enabled;
 		gt7_vr_enabled              = other.gt7_vr_enabled;
 		gt7_vr_scale                = other.gt7_vr_scale;
 		skip_shader_hashes          = other.skip_shader_hashes;

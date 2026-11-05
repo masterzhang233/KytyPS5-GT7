@@ -104,6 +104,7 @@ static std::string GetBuildString() {
 }
 
 static void PrintUsage() {
+	::printf("Tohi-GT7\n");
 	::printf("%s\n", GetBuildString().c_str());
 	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
 	::printf("Options:\n");

@@ -181,7 +181,7 @@ ConfigurationItem::ConfigurationItem(std::unique_ptr<Configuration> info, QTreeW
 		}
 		watcher->deleteLater();
 	});
-	watcher->setFuture(QtConcurrent::run([path = m_info->basedir]() -> qint64 {
+	watcher->setFuture(QtConcurrent::run([path = m_info->basedir, cancelled = m_cancel_size]() -> qint64 {
 		if (path.isEmpty()) {
 			return -1;
 		}
@@ -196,6 +196,9 @@ ConfigurationItem::ConfigurationItem(std::unique_ptr<Configuration> info, QTreeW
 		QDirIterator files(path, QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
 		                   QDirIterator::Subdirectories);
 		while (files.hasNext()) {
+			if (cancelled->load(std::memory_order_relaxed)) {
+				return -1;
+			}
 			files.next();
 			if (files.fileInfo().isFile()) {
 				bytes += files.fileInfo().size();
@@ -205,7 +208,9 @@ ConfigurationItem::ConfigurationItem(std::unique_ptr<Configuration> info, QTreeW
 	}));
 }
 
-ConfigurationItem::~ConfigurationItem() = default;
+ConfigurationItem::~ConfigurationItem() {
+	m_cancel_size->store(true, std::memory_order_relaxed);
+}
 
 void ConfigurationItem::Update(bool reload_icon) {
 	const auto display_text = GetDisplayText(*m_info);

@@ -44,7 +44,8 @@ public:
 	void ScanGameDirectory();
 	void ViewTrophies();
 	void ConfigureGt7Rendering();
-	void StartGt7Vr();
+	[[nodiscard]] bool Gt7DlssEnabled() const { return m_global_info.gt7_dlss_enabled; }
+	void SetGt7DlssEnabled(bool enabled);
 
 signals:
 

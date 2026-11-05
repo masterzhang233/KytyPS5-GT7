@@ -1083,6 +1083,30 @@ static void NotePatternFill(PatternFillOutcome outcome) {
 	since  = now;
 }
 
+// Consumed clears never reach prepared-binding validation. Check their actual
+// destination, including image metadata aliases, instead of discarding every
+// already captured HUD-less frame when an unrelated surface is cleared.
+static void CheckGt7DlssConsumedWrite(RenderContext& context, uint64_t shader,
+                                      const char* kind, GuestRange range, ImageId image_id = {}) {
+	auto* dlss = context.GetGt7Dlss();
+	if (!dlss || (!dlss->Active() && !dlss->WatchesFrameGenerationOutput())) return;
+	RenderColorInfo target {};
+	target.image_id = image_id;
+	target.desc.info.data = range;
+	const bool affected = dlss->MatchesScene(target) ||
+	                      dlss->MatchesFrameGenerationOutput(target) ||
+	                      dlss->MatchesWatchedWriteRange(range);
+	static uint64_t accepted = 0, rejected = 0;
+	auto& count = affected ? rejected : accepted;
+	if (++count <= 8 || count % 300 == 0) {
+		LOGF("GT7 FSR FG: consumed write %s #%llu kind=%s cs=%016" PRIx64
+		     " range=0x%012" PRIx64 "+0x%" PRIx64 " image=%u:%u\n",
+		     affected ? "rejected" : "unrelated", static_cast<unsigned long long>(count),
+		     kind, shader, range.address, range.size, image_id.index, image_id.generation);
+	}
+	if (affected) dlss->CancelFrame("consumed compute write affects watched scene or output");
+}
+
 bool RenderExecutor::TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
                                                 const CommandBuffer& buffer, uint64_t code_address,
                                                 uint32_t group_x, uint32_t group_y,
@@ -1134,6 +1158,8 @@ bool RenderExecutor::TryConsumeComputeMetaClear(const ShaderComputeInputInfo& in
 				if (!cache.ClearMeta(base, value)) {
 					continue;
 				}
+				CheckGt7DlssConsumedWrite(m_context, program.shader_hash, "metadata clear",
+				                          {base, cache.MetaSize(base)});
 				if (!cache.IsColorMeta(base)) {
 					if (pattern && i == 0) {
 						NotePatternFill(PatternFillOutcome::Meta);
@@ -1250,6 +1276,9 @@ static bool FillMappedParts(RenderContext& context, uint64_t shader, uint64_t ba
 	uint64_t mapped = 0;
 	for (const auto& span: spans) {
 		mapped += span.second;
+	}
+	for (const auto& span : spans) {
+		CheckGt7DlssConsumedWrite(context, shader, "sparse fill", {span.first, span.second});
 	}
 	context.GetBufferCache().FillMappedSpans(spans, value);
 	static std::atomic<uint32_t> logged {0};
@@ -1377,7 +1406,7 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		const auto  binding     = ResolveTexture(resource, resources.images[0]);
 		const auto& destination = binding.desc.info.data;
 		if (!FillSourcesDisjoint(resources.buffers, destination)) return false;
-		std::scoped_lock lock {cache.m_lock};
+		std::unique_lock lock {cache.m_lock};
 		const auto&      image = cache.GetImage(binding.image_id);
 		const auto&      view  = binding.desc.view_info;
 		if (image.backing.format != vk::Format::eD32SfloatS8Uint || image.info.samples != 1 ||
@@ -1392,6 +1421,11 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		vk::ClearValue                  clear {};
 		clear.depthStencil = vk::ClearDepthStencilValue {0.0f, fill.value};
 		cache.ClearImage(command, binding.image_id, image.backing.format, range, clear);
+		// The range matcher takes the cache lock itself. No image reference is used
+		// after releasing this nonrecursive lock.
+		lock.unlock();
+		CheckGt7DlssConsumedWrite(m_context, program.shader_hash, "stencil image clear",
+		                          destination, binding.image_id);
 		return true;
 	}
 	DispatchFill buffer_fill;
@@ -1405,9 +1439,11 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	BufferFillClear how;
 	std::string     what;
 	bool            also_run = false;
+	ImageId         cleared_image {};
 	if (buffer_fill.pattern) {
 		how = {.alone = true, .also_run = &also_run, .guest_word = true, .what = &what};
 	}
+	how.cleared_image = &cleared_image;
 	const bool cleared = cache.ClearImageFromBuffer(command, buffer_fill.address, buffer_fill.size,
 	                                                buffer_fill.value, how);
 	// (Fills that find no image are not logged: most fill metadata, an FMASK or a buffer.)
@@ -1426,6 +1462,8 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	if (!cleared) {
 		return false;
 	}
+	CheckGt7DlssConsumedWrite(m_context, program.shader_hash, "buffer image clear",
+	                          {buffer_fill.address, buffer_fill.size}, cleared_image);
 	if (buffer_fill.pattern) {
 		NotePatternFill(what.starts_with("the stencil") ? PatternFillOutcome::Stencil
 		                                                : PatternFillOutcome::Image);
@@ -1491,10 +1529,28 @@ static void FillPartitionTarget(const ShaderRecompiler::IR::CompiledShaderInfo& 
 // each partition's lanes in its own dispatch; the first one also tells which partitions there are.
 // A partition whose program translates or compiles is skipped meanwhile (its lanes keep what the
 // last dispatch wrote there), as a dispatch is.
-static void CheckGt7DlssComputeWrites(RenderContext& context, const ShaderStageRuntime& runtime,
-                                     const PreparedBindings& bindings) {
+static void CheckGt7DlssComputeWrites(RenderContext& context, const ShaderComputeInputInfo& input,
+                                     const PreparedBindings& bindings, uint32_t group_x,
+                                     uint32_t group_y, uint32_t group_z, uint32_t mode,
+                                     bool indirect = false) {
 	auto* dlss = context.GetGt7Dlss();
-	if (!dlss || !dlss->Active()) return;
+	if (!dlss || (!dlss->Active() && !dlss->WatchesFrameGenerationOutput())) return;
+	const auto& runtime = input.stage;
+	const auto& program = *runtime.program;
+	const auto reject_buffer = [&](const char* reason, uint32_t resource, GuestRange raw,
+	                               GuestRange actual) {
+		static uint64_t rejected = 0;
+		if (++rejected <= 12 || rejected % 300 == 0) {
+			LOGF("GT7 FSR FG: compute buffer guard rejected #%llu cs=%016" PRIx64
+			     " resource=%u raw=0x%012" PRIx64 "+0x%" PRIx64
+			     " actual=0x%012" PRIx64 "+0x%" PRIx64
+			     " groups=%ux%ux%u mode=0x%x indirect=%u: %s\n",
+			     static_cast<unsigned long long>(rejected), program.shader_hash, resource,
+			     raw.address, raw.size, actual.address, actual.size, group_x, group_y, group_z,
+			     mode, indirect ? 1u : 0u, reason);
+		}
+		dlss->CancelFrame(reason);
+	};
 	if (runtime.program->has_address_writes) {
 		dlss->CancelFrame("compute writes through unbounded addresses");
 		return;
@@ -1504,19 +1560,46 @@ static void CheckGt7DlssComputeWrites(RenderContext& context, const ShaderStageR
 		RenderColorInfo target {};
 		target.image_id = bindings.images[i].image_id;
 		target.desc = bindings.images[i].desc;
-		if (dlss->MatchesScene(target)) {
+		if (dlss->MatchesScene(target) || dlss->MatchesFrameGenerationOutput(target)) {
 			dlss->CancelFrame("compute writes the temporal scene");
 			return;
 		}
 	}
+	// Use exactly the ranges FindBuffers resolved for the live binding layout. Raw
+	// descriptors may be null, clipped to mapped memory, or enlarged for OOB_SELECT=2.
+	// RebindBuffers gives canonical empty sources a zero shader-accessible length.
+	const auto& layout = program.bindings;
 	const auto& resources = *runtime.resources;
-	for (size_t i = 0; i < resources.buffers.size() && i < runtime.program->info.buffers.size(); ++i) {
-		if (!runtime.program->info.buffers[i].written || resources.buffers[i].dword_count < 4) continue;
-		const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-		RenderColorInfo alias {};
-		alias.desc.info.data = {descriptor.Base48(), uint64_t(std::max<uint32_t>(descriptor.Stride(), 1u)) * descriptor.NumRecords()};
-		if (dlss->MatchesScene(alias)) {
-			dlss->CancelFrame("compute buffer aliases the temporal scene");
+	if (bindings.buffer_sources.size() != layout.memory_offset_count ||
+	    (layout.memory_offset_count != 0 &&
+	     (layout.descriptors.empty() ||
+	      layout.descriptors.front().kind != ShaderRecompiler::IR::DescriptorBindingKind::Buffers ||
+	      layout.descriptors.front().resources.size() != layout.memory_offset_count))) {
+		reject_buffer("compute buffer binding layout is invalid", UINT32_MAX, {}, {});
+		return;
+	}
+	for (uint32_t i = 0; i < layout.memory_offset_count; ++i) {
+		const auto resource = layout.descriptors.front().resources[i];
+		if (resource >= program.info.buffers.size() || resource >= resources.buffers.size() ||
+		    resources.buffers[resource].dword_count < 4 ||
+		    (i != 0 && resource <= layout.descriptors.front().resources[i - 1])) {
+			reject_buffer("compute buffer resource mapping is invalid", resource, {}, {});
+			return;
+		}
+		if (!program.info.buffers[resource].written) continue;
+		const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[resource]);
+		const GuestRange raw {descriptor.Base48(), descriptor.GetSize()};
+		const auto& source = bindings.buffer_sources[i];
+		if (source.address == 0 && source.size == 0 && !source.id) continue;
+		const GuestRange actual {source.address, source.size};
+		if (!source.id || !actual.Valid()) {
+			reject_buffer("compute resolved buffer range is invalid", resource, raw, actual);
+			return;
+		}
+		if (dlss->MatchesWatchedWriteRange(actual)) {
+			if (!indirect && resource == 1 && dlss->PreservesFrameGenerationMetadata(
+			        input, bindings, group_x, group_y, group_z, mode)) continue;
+			reject_buffer("compute buffer aliases the temporal scene", resource, raw, actual);
 			return;
 		}
 	}
@@ -1702,8 +1785,7 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		                                thread_group_x, thread_group_y, thread_group_z, mode) ||
 		     TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 		                                 thread_group_z, mode, cs_regs.cs_regs.data_addr))) {
-			// Consumed clears bypass prepared bindings and their scene-alias check.
-			if (auto* dlss = m_context.GetGt7Dlss()) dlss->CancelFrame("compute clear bypasses scene write validation");
+			// Each clear checked its resolved destination before returning here.
 			if (FrameGraph::Logging()) {
 				FrameGraph::Log("  consumed as a clear: cs %016" PRIx64, program.shader_hash);
 			}
@@ -1733,7 +1815,7 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		if (fill && SparseFills() &&
 		    FillMappedParts(m_context, program.shader_hash, fill_found.address, fill_found.size,
 		                    fill_found.value)) {
-			if (auto* dlss = m_context.GetGt7Dlss()) dlss->CancelFrame("sparse fill bypasses scene write validation");
+			// FillMappedParts checked the actual mapped destination spans.
 			if (fill_found.pattern) {
 				NotePatternFill(PatternFillOutcome::MappedParts);
 			}
@@ -1811,7 +1893,6 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchTextures);
 		PrepareBindings(input_info.stage, bindings);
 	}
-	CheckGt7DlssComputeWrites(m_context, input_info.stage, bindings);
 	if (program.bindings.dispatch_thread_dword != ShaderRecompiler::IR::PushData::NoStart) {
 		std::copy(std::begin(input_info.dispatch_threads_num), std::end(input_info.dispatch_threads_num),
 		          bindings.shader_data.begin() + program.bindings.dispatch_thread_dword);
@@ -1824,6 +1905,8 @@ void RenderExecutor::DispatchDirectPart(uint64_t submit_id, CommandBuffer& buffe
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchFind);
 		FindBuffers(bindings);
 	}
+	CheckGt7DlssComputeWrites(m_context, input_info, bindings, thread_group_x,
+	                         thread_group_y, thread_group_z, mode);
 	if (program.info.uses_dma) {
 		KYTY_PROFILER_BLOCK("Dispatch::PrepareBda");
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchBda);
@@ -2125,7 +2208,6 @@ void RenderExecutor::DispatchIndirectPart(uint64_t submit_id, CommandBuffer& buf
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchTextures);
 		PrepareBindings(input_info.stage, bindings);
 	}
-	CheckGt7DlssComputeWrites(m_context, input_info.stage, bindings);
 	const auto& program = *input_info.stage.program;
 	FillPartitionTarget(program, partition, bindings);
 	ReportWritesOverHoles(input_info, "an indirect dispatch is not checked for a fill", nullptr,
@@ -2137,6 +2219,7 @@ void RenderExecutor::DispatchIndirectPart(uint64_t submit_id, CommandBuffer& buf
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchFind);
 		FindBuffers(bindings);
 	}
+	CheckGt7DlssComputeWrites(m_context, input_info, bindings, 0, 0, 0, mode, true);
 	if (program.info.uses_dma) {
 		const GpuPhases::Scope phase(GpuPhases::Phase::DispatchBda);
 		m_context.PrepareBda();

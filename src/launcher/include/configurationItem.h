@@ -6,6 +6,7 @@
 #include <QTreeWidgetItem>
 
 #include <memory>
+#include <atomic>
 
 class QComboBox;
 class QLabel;
@@ -36,6 +37,7 @@ private:
 	void UpdateStatusIndicator();
 
 	std::unique_ptr<Configuration> m_info;
+	std::shared_ptr<std::atomic_bool> m_cancel_size = std::make_shared<std::atomic_bool>(false);
 	QIcon                          m_icon;
 	bool                           m_running          = false;
 	QComboBox*                     m_status_combo     = nullptr;

@@ -4,6 +4,7 @@
 #include "configuration.h"
 
 #include <QMap>
+#include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
 
@@ -30,8 +31,11 @@ signals:
 
 private:
 	void Save() const;
+	void Fetch(int attempt);
 
 	QMap<QString, CompatibilityEntry> m_entries;
+	QNetworkAccessManager             m_network;
+	bool                              m_loading = false;
 	bool                              m_local = false;
 };
 

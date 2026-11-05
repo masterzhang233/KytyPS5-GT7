@@ -39,15 +39,16 @@ int main(int argc, char** argv) {
 	original.title_id = "PPSA01317";
 	Check(!original.controller.wheel_enabled, "racing wheel is disabled for new configurations");
 	Check(original.console_language == 11, "new configurations default to Simplified Chinese");
-	Check(Gt7ProfileArguments(original).isEmpty(), "existing/native defaults do not add a patch");
+	Check(original.gt7_dlss_enabled && Gt7ProfileArguments(original) == QStringList {"--gt7-desktop-height", "1080"}, "fresh launcher defaults to fixed DLSS desktop profile");
+	original.gt7_dlss_enabled = false;
 	original.gt7_desktop_height = 1440;
 	original.gt7_vr_scale = 120;
 	Check(Gt7ProfileArguments(original) == QStringList {"--gt7-desktop-height", "1440"},
 	      "desktop internal size is a separate request");
 	const auto output_before = original.screen_resolution;
 	original.gt7_vr_enabled = true;
-	Check(Gt7ProfileArguments(original) == QStringList {"--vr", "--gt7-vr-scale", "120"},
-	      "VR selects only the VR profile even when desktop preset is remembered");
+	Check(Gt7ProfileArguments(original) == QStringList {"--gt7-desktop-height", "1440"},
+	      "legacy VR preferences cannot enable VR from the desktop launcher");
 	Check(original.screen_resolution == output_before, "profile construction preserves output resolution");
 	Configuration copied;
 	copied.CopyGameInfoFrom(original);
@@ -76,14 +77,15 @@ int main(int argc, char** argv) {
 	per_game.gt7_desktop_height = 2160;
 	per_game.gt7_vr_enabled = true;
 	per_game.gt7_vr_scale = 125;
+	per_game.gt7_dlss_enabled = false;
 	loaded.CopyEmulatorSettingsFrom(per_game);
 	Check(loaded.controller.wheel_enabled && loaded.controller.wheel_config == original.controller.wheel_config &&
 	          loaded.gt7_desktop_height == 2160 &&
-	          Gt7ProfileArguments(loaded) == QStringList {"--vr", "--gt7-vr-scale", "125"},
+	          Gt7ProfileArguments(loaded) == QStringList {"--gt7-desktop-height", "2160"},
 	      "per-game rendering settings retain the global wheel preference and mapping path");
 	loaded.controller.wheel_enabled = false;
-	Check(Gt7ProfileArguments(loaded) == QStringList {"--vr", "--gt7-vr-scale", "125"},
-	      "disabling the wheel preserves the selected VR profile");
+	Check(Gt7ProfileArguments(loaded) == QStringList {"--gt7-desktop-height", "2160"},
+	      "disabling the wheel preserves the desktop profile");
 	QSettings old_settings(temporary.filePath("old.ini"), QSettings::IniFormat);
 	Configuration old;
 	old.ReadSettings(&old_settings);
@@ -91,6 +93,8 @@ int main(int argc, char** argv) {
 	Check(old.console_language == 11, "missing language setting defaults to Simplified Chinese");
 	Check(old.gt7_desktop_height == 0 && !old.gt7_vr_enabled && old.gt7_vr_scale == 100,
 	      "older settings receive safe native/VR-off defaults");
+	Check(old.gt7_dlss_enabled, "missing DLSS settings default to enabled");
+	Check(!loaded.gt7_dlss_enabled, "disabled DLSS preference survives settings and per-game copy");
 	Check(!old.controller.wheel_enabled, "older settings leave racing-wheel emulation disabled");
 	QSettings explicit_settings(temporary.filePath("explicit-language.ini"), QSettings::IniFormat);
 	explicit_settings.setValue(QStringLiteral("console_language"), 1);
@@ -123,6 +127,57 @@ int main(int argc, char** argv) {
 		Check(!parsed.SetGameSettings({{"gt7_vr_scale", QString::fromLatin1(bad)}}, error),
 		      "unsupported or malformed VR imports rejected");
 	}
+	Configuration preset;
+	preset.title_id = "PPSA01317";
+	preset.gt7_vr_enabled = true;
+	preset.gt7_desktop_height = 2160;
+	preset.screen_resolution = Configuration::Resolution::R3840X2160;
+	preset.user_id = 1000;
+	preset.reflections_half_rate = true;
+	preset.skip_shader_hashes = "1234";
+	ApplyGt7DesktopPreset(preset);
+	Check(preset.screen_resolution == Configuration::Resolution::R2560X1440 &&
+	          preset.gt7_desktop_height == 1080 && !preset.gt7_vr_enabled,
+	      "preset overrides legacy resolution and VR without tunable alternatives");
+	Check(preset.user_id == 1000 && preset.printf_direction == Configuration::LogDirection::Silent,
+	      "preset preserves save identity and avoids expensive API trace logs");
+	Check(!preset.reflections_half_rate && preset.skip_shader_hashes.isEmpty(),
+	      "fixed preset cannot inherit old skipped shaders or half-rate reflections");
+	QProcessEnvironment inherited;
+	inherited.insert("PATH", "keep");
+	inherited.insert("KYTY_GT7_FSR_FG_DEBUG", "0");
+	inherited.insert("KYTY_GT7_FSR_FG_CAPTURE_OUTPUTS", "1");
+	inherited.insert("KYTY_FG_FRAMES", "100");
+	inherited.insert("KYTY_GT7_DLSS_TRACE", "1");
+	inherited.insert("GT7_OLD_OVERRIDE", "1");
+	const auto enabled_env = Gt7LaunchEnvironment(preset, temporary.path(), inherited);
+	Check(enabled_env.value("KYTY_GT7_DLSS") == "1" &&
+	          enabled_env.value("KYTY_GT7_FSR_FG") == "1" &&
+	          enabled_env.value("KYTY_GT7_FSR_FG_OCCLUSION_GUARD") == "1",
+	      "one enabled switch requests DLSS, frame generation and occlusion guard together");
+	Check(enabled_env.value("KYTY_FG_MANUAL_ONLY") == "1" &&
+	          !enabled_env.contains("KYTY_GT7_FSR_FG_DEBUG") &&
+	          !enabled_env.contains("KYTY_GT7_FSR_FG_CAPTURE_OUTPUTS") &&
+	          !enabled_env.contains("KYTY_FG_FRAMES") &&
+	          !enabled_env.contains("KYTY_GT7_DLSS_TRACE") &&
+	          !enabled_env.contains("GT7_OLD_OVERRIDE") && enabled_env.value("PATH") == "keep",
+	      "ordinary play removes inherited debug flags and suppresses automatic captures");
+	Check(enabled_env.value("KYTY_GT7_DLSS_BACKEND") == temporary.filePath("kyty_dlss_backend.dll") &&
+	          enabled_env.value("KYTY_GT7_DLSS_RUNTIME") == temporary.path(),
+	      "portable runtime paths resolve relative to the selected emulator");
+	preset.gt7_dlss_enabled = false;
+	preset.screen_resolution = Configuration::Resolution::R1920X1080;
+	preset.printf_direction = Configuration::LogDirection::File;
+	ApplyGt7DesktopPreset(preset);
+	const auto disabled_env = Gt7LaunchEnvironment(preset, temporary.path(), enabled_env);
+	Check(disabled_env.value("KYTY_GT7_DLSS") == "0" &&
+	          disabled_env.value("KYTY_GT7_FSR_FG") == "0" &&
+	          disabled_env.value("KYTY_GT7_FSR_FG_OCCLUSION_GUARD") == "0" &&
+	          !disabled_env.contains("KYTY_GT7_DLSS_BACKEND"),
+	      "turning off the switch really disables the entire preset despite inherited settings");
+	Check(preset.screen_resolution == Configuration::Resolution::R1920X1080 &&
+	          preset.printf_direction == Configuration::LogDirection::Silent,
+	      "unchecked preset preserves desktop output but still disables high-volume API logs");
 	copied.title_id = "PPSA99999";
 	Check(!HasGt7Profile(copied) && Gt7ProfileArguments(copied).isEmpty(),
 	      "other titles do not receive GT7 flags inherited from settings");

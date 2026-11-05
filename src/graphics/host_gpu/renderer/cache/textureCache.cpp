@@ -4359,6 +4359,84 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	}
 }
 
+bool TextureCache::WriteOverlapsImage(GuestRange write, ImageId watched, GuestRange watched_range) {
+	if (!write.Valid() || !watched_range.Valid() || !watched) return true;
+	if (ImageRangeOverlaps(write, watched_range)) return true;
+	std::scoped_lock lock {m_lock};
+	const auto overlaps_info = [write](const ImageInfo& info) {
+		if (!info.data.Valid() || (info.HasMetadata() && info.metadata.range.Empty())) return true;
+		for (const auto range : {info.data, info.stencil, info.metadata.range}) {
+			if (range.Empty()) continue;
+			if (!range.Valid() || ImageRangeOverlaps(write, range)) return true;
+		}
+		return false;
+	};
+	const auto* image = m_slot_images.try_get(watched);
+	if (image == nullptr || !image->registered || overlaps_info(image->info)) return true;
+	if (!ImageRangeOverlaps(watched_range, image->info.data) &&
+	    (!image->info.stencil.Valid() || !ImageRangeOverlaps(watched_range, image->info.stencil)))
+		return true;
+	if (image->depth_id) {
+		const auto* owner = m_slot_images.try_get(image->depth_id);
+		if (owner == nullptr || !owner->registered || overlaps_info(owner->info)) return true;
+	}
+	// Metadata need not overlap the pixel bytes. Look at the live aliases of the
+	// watched pixels rather than only comparing the write to the presented image.
+	for (const auto id : FindImagesInRegion(watched_range.address, watched_range.size, false)) {
+		const auto* alias = m_slot_images.try_get(id);
+		if (alias == nullptr) continue;
+		if (overlaps_info(alias->info)) return true;
+		if (alias->depth_id) {
+			const auto* owner = m_slot_images.try_get(alias->depth_id);
+			if (owner == nullptr || !owner->registered || overlaps_info(owner->info)) return true;
+		}
+	}
+	return false;
+}
+
+bool TextureCache::WriteIsOnlyDccMetadata(GuestRange write, ImageId watched,
+                                         GuestRange watched_range) {
+	if (!write.Valid() || !watched_range.Valid() || !watched ||
+	    ImageRangeOverlaps(write, watched_range)) return false;
+	std::scoped_lock lock {m_lock};
+	const auto* image = m_slot_images.try_get(watched);
+	if (image == nullptr || !image->registered || image->info.data != watched_range) return false;
+	bool found_dcc = false;
+	const auto metadata_only = [&](const Image& candidate) {
+		const auto& info = candidate.info;
+		if (!candidate.registered || candidate.depth_id || info.IsDepth() ||
+		    !info.data.Valid() || !info.stencil.ValidOrEmpty() ||
+		    ImageRangeOverlaps(write, info.data) ||
+		    (!info.stencil.Empty() && ImageRangeOverlaps(write, info.stencil))) return false;
+		if (!info.HasMetadata()) return info.metadata.range.Empty();
+		if (info.metadata.kind != ImageMetadataKind::Dcc &&
+		    info.metadata.kind != ImageMetadataKind::Cmask &&
+		    info.metadata.kind != ImageMetadataKind::Htile) return false;
+		if (!info.metadata.range.Valid()) return false;
+		if (!ImageRangeOverlaps(write, info.metadata.range)) return true;
+		if (info.metadata.kind != ImageMetadataKind::Dcc || info.metadata.range != write)
+			return false;
+		found_dcc = true;
+		return true;
+	};
+	if (!metadata_only(*image)) return false;
+	// The render target and video-out aliases may carry different DCC ranges.
+	// Accept the exact range of either, while retaining every alias's pixel and
+	// metadata ownership. A partial metadata write has no such proof.
+	for (const auto id : FindImagesInRegion(watched_range.address, watched_range.size, false)) {
+		const auto* alias = m_slot_images.try_get(id);
+		if (alias == nullptr || !metadata_only(*alias)) return false;
+	}
+	if (!found_dcc) return false;
+	// Metadata memory may have been reused as another live image's pixels. Stencil
+	// planes are registered image aliases too, so this also catches their owners.
+	for (const auto id : FindImagesInRegion(write.address, write.size, false)) {
+		const auto* alias = m_slot_images.try_get(id);
+		if (alias == nullptr || !metadata_only(*alias)) return false;
+	}
+	return true;
+}
+
 bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
                                         uint32_t packed_clear, const BufferFillClear& how) {
 	if (command.IsInvalid() || !GuestRange {address, size}.Valid()) {
@@ -4473,6 +4551,9 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 	ClearImage(command, selected, image.backing.format,
 	           {aspect, subresources.base_level, subresources.level_count,
 	            subresources.base_layer, subresources.layer_count}, clear);
+	if (how.cleared_image != nullptr) {
+		*how.cleared_image = selected;
+	}
 	if (stencil_id) {
 		TrackImage(stencil_id);
 		CommitGpuWrite(m_slot_images[stencil_id]);

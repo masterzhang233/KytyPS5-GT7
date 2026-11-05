@@ -17,6 +17,7 @@ QVariantMap Configuration::GameSettings() const {
 	KYTY_CFG_SET(bindless_images_enabled);
 	KYTY_CFG_SET(reflections_half_rate);
 	KYTY_CFG_SET(gt7_desktop_height);
+	KYTY_CFG_SET(gt7_dlss_enabled);
 	KYTY_CFG_SET(gt7_vr_enabled);
 	KYTY_CFG_SET(gt7_vr_scale);
 	KYTY_CFG_SET(skip_shader_hashes);
@@ -70,6 +71,7 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 	    gt7_desktop_height != 1440 && gt7_desktop_height != 2160) {
 		gt7_desktop_height = 0;
 	}
+	gt7_dlss_enabled = s.value("gt7_dlss_enabled", true).toBool();
 	gt7_vr_enabled = s.value("gt7_vr_enabled", false).toBool();
 	gt7_vr_scale = s.value("gt7_vr_scale", 100).toInt();
 	if (gt7_vr_scale != 100 && gt7_vr_scale != 110 && gt7_vr_scale != 120 && gt7_vr_scale != 125) {

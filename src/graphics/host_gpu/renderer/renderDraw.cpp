@@ -2952,6 +2952,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	Gt7Dlss* dlss = m_context.GetGt7Dlss();
 	PipelineCache::Pipeline* dlss_effect_pipeline = nullptr;
 	bool dlss_composite = false;
+	bool fg_capture_hudless = false;
 	if (dlss) {
 		const bool address_writes =
 		    (state.ps_active && state.ps_input_info.stage.program->has_address_writes) ||
@@ -2961,9 +2962,89 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		if (writes || address_writes) dlss->CancelFrame("graphics shader writes storage or unbounded addresses");
 		const auto ps = state.ps_active ? state.ps_input_info.stage.program->shader_hash : 0;
 		const auto vs = vertex_stages.front().stage.program->shader_hash;
+		if (m_context.GetGraphics().gt7_fsr_present_queue != nullptr && state.depth_info.image_id && state.color_count >= 2) {
+			for (const auto& color : std::span(state.color_info, state.color_count)) {
+				if (color.target_slot == 1 && color.desc.info.pixel_format == vk::Format::eR16G16Sfloat &&
+				    color.desc.info.extent.width == 1920 && color.desc.info.extent.height == 1080) {
+					dlss->DescribeFrameGenerationDraw(vertex_stages.front().stage, ps, state.depth_info,
+					                                  {state.color_info, state.color_count},
+					                                  Gt7DlssFullViewport(buffer, 1920, 1080), writes || address_writes);
+					break;
+				}
+			}
+		}
+		if (m_context.GetGraphics().gt7_fsr_present_queue != nullptr &&
+		    Gt7Dlss::IsFrameGenerationCameraShader(vs) && !mesh_active && vertex_stages.size() == 1 &&
+		    vertex_stages.front().stage.program->stage == ShaderType::Vertex &&
+		    state.ps_active && !state.ps_input_info.ps_depth_export_enable &&
+		    !writes && !address_writes && Gt7DlssFullViewport(buffer, 1920, 1080)) {
+			dlss->ObserveFrameGenerationCamera(vertex_stages.front().stage, state.depth_info,
+			                                  {state.color_info, state.color_count});
+		}
 		const bool direct = !mesh_active && !draw.IsIndexed() && vertex_stages.size() == 1 &&
 		    emit.gpu_args_address == 0 && emit.gpu_instance_count_address == 0 && draw.instance_count == 1 &&
 		    emit.first_vertex == 0 && emit.first_instance == 0;
+		if (m_context.GetGraphics().gt7_fsr_present_queue != nullptr) {
+			const auto& blend = buffer.GetRegisters().GetBlendControl(0);
+			const bool ordinary_vertex = !mesh_active && vertex_stages.size() == 1 &&
+			    vertex_stages.front().stage.program->stage == ShaderType::Vertex;
+			// This exact glyph program is a mesh stage in the real shader cache.
+			// FrameGraph labels every vertex-stage list "vertex", including mesh;
+			// retaining a Vertex-only test wrongly rejected all captured race text.
+			const bool glyph_pair = vs == 0x9a82023cd470256fULL && ps == 0x326fe59634e8b213ULL;
+			const bool known_glyph_mesh = glyph_pair && mesh_active && vertex_stages.size() == 1 &&
+			    vertex_stages.front().stage.program->stage == ShaderType::Mesh;
+			const bool ui_color_factors = (blend.color_srcblend == 4 && blend.color_destblend == 5) ||
+			     (vs == 0x352273e237eda017ULL && ps == 0xbbc8d9b8b2bc2c32ULL &&
+			      blend.color_srcblend == 1 && blend.color_destblend == 4);
+			// One bit per failed clause; diagnostics never change acceptance.
+			const uint32_t ui_reject_mask =
+			    (!(ordinary_vertex || known_glyph_mesh) ? 1u << 0 : 0u) |
+			    (!state.ps_active ? 1u << 1 : 0u) | (writes ? 1u << 2 : 0u) |
+			    (address_writes ? 1u << 3 : 0u) | (state.depth_info.image_id ? 1u << 4 : 0u) |
+			    (state.ps_input_info.ps_depth_export_enable ? 1u << 5 : 0u) |
+			    (!blend.enable ? 1u << 6 : 0u) | (blend.color_comb_fcn != 0 ? 1u << 7 : 0u) |
+			    (!ui_color_factors ? 1u << 8 : 0u) | (!blend.separate_alpha_blend ? 1u << 9 : 0u) |
+			    (blend.alpha_srcblend != 0 ? 1u << 10 : 0u) | (blend.alpha_comb_fcn != 0 ? 1u << 11 : 0u) |
+			    (blend.alpha_destblend != 1 ? 1u << 12 : 0u);
+			if (ui_reject_mask != 0 && dlss->WatchesFrameGenerationOutput() &&
+			    std::ranges::any_of(std::span(state.color_info, state.color_count),
+			        [&](const auto& target) { return dlss->MatchesFrameGenerationOutput(target); })) {
+				static uint64_t failures = 0;
+				static bool requested_glyph_capture = false;
+				const bool request_capture = glyph_pair && !requested_glyph_capture && !FrameGraph::Active();
+				if (request_capture) {
+					requested_glyph_capture = true;
+					FrameGraph::RequestCapture();
+				}
+				if (++failures <= 8 || failures % 300 == 0 || request_capture)
+					LOGF("GT7 FSR FG: UI guard failure #%llu vs=%016" PRIx64 " ps=%016" PRIx64
+					     " mask=0x%x mesh=%u stages=%zu stage_type=%u ps_active=%u storage=%u address=%u"
+					     " depth=%u:%u depth_test=%u depth_write=%u ps_depth=%u blend=%u color=%u/%u/%u"
+					     " alpha=%u/%u/%u separate=%u capture_requested=%u\n",
+					     static_cast<unsigned long long>(failures), vs, ps, ui_reject_mask, unsigned(mesh_active),
+					     vertex_stages.size(), unsigned(vertex_stages.front().stage.program->stage),
+					     unsigned(state.ps_active), unsigned(writes), unsigned(address_writes),
+					     state.depth_info.image_id.index, state.depth_info.image_id.generation,
+					     unsigned(state.depth_info.depth_test_enable), unsigned(state.depth_info.depth_write_enable),
+					     unsigned(state.ps_input_info.ps_depth_export_enable), unsigned(blend.enable),
+					     blend.color_srcblend, blend.color_comb_fcn, blend.color_destblend,
+					     blend.alpha_srcblend, blend.alpha_comb_fcn, blend.alpha_destblend,
+					     unsigned(blend.separate_alpha_blend), unsigned(request_capture));
+			}
+			dlss->CheckFrameGenerationOutputDraw({state.color_info, state.color_count}, bindings.pixel ? &*bindings.pixel : nullptr,
+			    vs, ps, ui_reject_mask == 0);
+			if (direct && ordinary_vertex && state.ps_active && !writes && !address_writes &&
+			    ps == 0xedb9cdad0985bf44ULL && vs == 0xf13bd2584bf580c0ULL &&
+			    bindings.pixel && state.color_count == 1 && !state.depth_info.image_id &&
+			    !state.ps_input_info.ps_depth_export_enable && !blend.enable && draw.index_count == 4 &&
+			    topology == vk::PrimitiveTopology::eTriangleFan &&
+			    render_target_mask_slot(buffer.GetRegisters().GetRenderTargetMask(), 0) == 0xf &&
+			    Gt7DlssFullViewport(buffer, 3840, 2160)) {
+				fg_capture_hudless = dlss->FrameGenerationTonemapMatches(state.vertex_info[0],
+				    *bindings.pixel, state.color_info[0]);
+			}
+		}
 		const bool taa = ps == 0xc3113b114fb02e5dULL && vs == 0xf13bd2584bf580c0ULL;
 		if (taa) {
 			m_gt7_dlss_effects = 0;
@@ -3565,8 +3646,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			dlss->CancelFrame("effect attachment unavailable or depth clear");
 		}
 	}
-	if (dlss_composite && dlss->Active())
-		(void)dlss->Composite(buffer, bindings.pixel->images[0], state.color_info[0], m_gt7_dlss_effects);
+	if (dlss_composite && dlss->Active() &&
+	    dlss->Composite(buffer, bindings.pixel->images[0], state.color_info[0], m_gt7_dlss_effects))
+		dlss->NoteFrameGenerationSceneTarget(state.color_info[0]);
+	if (fg_capture_hudless)
+		dlss->CaptureFrameGenerationHudless(buffer, state.color_info[0]);
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 }

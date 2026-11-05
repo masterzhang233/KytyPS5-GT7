@@ -193,6 +193,13 @@ struct GraphicContext {
 	// Null preserves the shared-queue path. This never aliases the readback queue.
 	Common::Mutex                      vr_queue_mutex;
 	vk::Queue                          vr_queue = nullptr;
+	// Opt-in desktop FSR frame interpolation owns these queues exclusively. They never
+	// alias the guest renderer, SteamVR, or readback queues.
+	vk::Queue                          gt7_fsr_present_queue = nullptr;
+	vk::Queue                          gt7_fsr_compute_queue = nullptr;
+	vk::Queue                          gt7_fsr_acquire_queue = nullptr;
+	uint32_t                           gt7_fsr_compute_family = UINT32_MAX;
+	uint64_t                           gt7_fsr_vram_reserve_bytes = 0;
 	// The queue for game threads' reads of bytes the GPU has finished writing (BufferCache's fast
 	// readback, ReadbackQueue), and its family: the copy engines' (transfer-only) family when the
 	// device has one, else the universal family's second queue; null with KYTY_FAST_READBACK=0 or

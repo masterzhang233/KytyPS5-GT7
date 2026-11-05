@@ -51,6 +51,9 @@ struct BufferFillClear {
 	bool guest_word = false;
 	// What it cleared, or why it did not, for logs (optional).
 	std::string* what = nullptr;
+	// The actual image that was cleared (a stencil fill can select its depth owner).
+	// Written only when a clear was recorded, even if also_run asks to dispatch too.
+	ImageId* cleared_image = nullptr;
 };
 
 // The "Image churn" line (round 78: images registered and unregistered, by area, why dropped and
@@ -114,6 +117,17 @@ public:
 		return image;
 	}
 	void MarkGpuWritten(ImageId id);
+	// Whether a guest write can change a watched image, directly or through a cached
+	// pixel/stencil alias's metadata. Invalid ranges or a retired watched ID fail closed.
+	// Takes m_lock; do not call while holding the texture-cache lock.
+	[[nodiscard]] bool WriteOverlapsImage(GuestRange write, ImageId watched,
+	                                      GuestRange watched_range);
+	// Ownership only: the complete write is exactly DCC metadata of a live pixel
+	// alias, and cannot reach pixel/stencil bytes or another metadata kind. The caller
+	// must separately prove the written bytes cannot encode a clear (expanded 0xff).
+	// Takes m_lock; do not call while holding the texture-cache lock.
+	[[nodiscard]] bool WriteIsOnlyDccMetadata(GuestRange write, ImageId watched,
+	                                         GuestRange watched_range);
 
 	// A fill of exactly an image's memory (a color or depth image's, or a depth image's stencil
 	// plane) as a clear of that image to the fill's word; false when there is no such image or the

@@ -1,45 +1,31 @@
 #include "launcherTheme.h"
 
 #include <QApplication>
-#include <QEvent>
 #include <QFile>
-#include <QObject>
-#include <QTimer>
-
-namespace {
-
-class PaletteChangeFilter final: public QObject {
-public:
-	explicit PaletteChangeFilter(QApplication& application)
-	    : QObject(&application), m_application(application) {}
-
-protected:
-	bool eventFilter(QObject* watched, QEvent* event) override {
-		if (event->type() == QEvent::ApplicationPaletteChange && !m_refresh_pending) {
-			m_refresh_pending = true;
-			QTimer::singleShot(0, &m_application, [this] {
-				m_application.setStyleSheet(m_application.styleSheet());
-				m_refresh_pending = false;
-			});
-		}
-
-		return QObject::eventFilter(watched, event);
-	}
-
-private:
-	QApplication& m_application;
-	bool          m_refresh_pending = false;
-};
-
-} // namespace
+#include <QPalette>
+#include <QStyleFactory>
 
 namespace LauncherTheme {
 
 void Initialize(QApplication& application) {
+	application.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+	QPalette palette;
+	palette.setColor(QPalette::Window, QColor(20, 24, 33));
+	palette.setColor(QPalette::WindowText, QColor(235, 237, 244));
+	palette.setColor(QPalette::Base, QColor(16, 21, 30));
+	palette.setColor(QPalette::AlternateBase, QColor(27, 34, 46));
+	palette.setColor(QPalette::Text, QColor(235, 237, 244));
+	palette.setColor(QPalette::Button, QColor(36, 43, 56));
+	palette.setColor(QPalette::ButtonText, QColor(235, 237, 244));
+	palette.setColor(QPalette::Highlight, QColor(176, 37, 56));
+	palette.setColor(QPalette::HighlightedText, Qt::white);
+	palette.setColor(QPalette::Link, QColor(255, 117, 132));
+	palette.setColor(QPalette::Disabled, QPalette::Text, QColor(117, 128, 147));
+	palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(117, 128, 147));
+	application.setPalette(palette);
 	QFile style_sheet_file(QStringLiteral(":/styles/launcher.qss"));
 	if (style_sheet_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
 		application.setStyleSheet(QString::fromUtf8(style_sheet_file.readAll()));
-		application.installEventFilter(new PaletteChangeFilter(application));
 	}
 }
 } // namespace LauncherTheme

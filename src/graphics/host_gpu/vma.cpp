@@ -260,7 +260,10 @@ uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	if (discrete) {
 		const auto own = budget - std::min<uint64_t>(budget / 8, 1024ull * 1024 * 1024);
 		const auto target = VramTargetBytes();
-		return target != 0 ? std::min(own, target) : own;
+		const auto capped = target != 0 ? std::min(own, target) : own;
+		// FSR's allocations are external to VMA. Reserve their anticipated 1440p
+		// cost before cache growth; keep a finite budget under artificial VRAM caps.
+		return capped - std::min(gt7_fsr_vram_reserve_bytes, capped / 2);
 	}
 	constexpr uint64_t system_reserve = 8ull * 1024 * 1024 * 1024;
 	const auto         available      = budget > usage ? budget - usage : uint64_t {0};

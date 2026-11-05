@@ -42,14 +42,7 @@ protected:
 	void paintEvent(QPaintEvent* event) override {
 		{
 			QPainter painter(viewport());
-			if (m_scaled.isNull()) {
-				painter.fillRect(event->rect(), palette().brush(QPalette::Base));
-			} else {
-				painter.drawPixmap(m_scaled_pos, m_scaled);
-				auto overlay = palette().color(QPalette::Base);
-				overlay.setAlpha(185);
-				painter.fillRect(event->rect(), overlay);
-			}
+			painter.fillRect(event->rect(), QColor(8, 11, 17, 125));
 		}
 
 		QTreeWidget::paintEvent(event);

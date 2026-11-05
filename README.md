@@ -1,54 +1,72 @@
-# KytyPS5
+# Tohi-GT7
 
-[![Build KytyPS5 (Windows)](https://img.shields.io/github/check-runs/KytyPS5/KytyPS5/main?nameFilter=Build%20KytyPS5%20%28Windows%29&label=Build%20KytyPS5%20%28Windows%29)](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml)
-[![Build KytyPS5 (Linux)](https://img.shields.io/github/check-runs/KytyPS5/KytyPS5/main?nameFilter=Build%20KytyPS5%20%28Linux%29&label=Build%20KytyPS5%20%28Linux%29)](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml)
-[![Build KytyPS5 (macOS)](https://img.shields.io/github/check-runs/KytyPS5/KytyPS5/main?nameFilter=Build%20KytyPS5%20%28macOS%29&label=Build%20KytyPS5%20%28macOS%29)](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20Linux%20x64%20%7C%20macOS%20x86__64-0078D4.svg)](#system-requirements)
+[![Build](https://github.com/masterzhang233/Tohi-GT7/actions/workflows/build.yml/badge.svg)](https://github.com/masterzhang233/Tohi-GT7/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/masterzhang233/Tohi-GT7?include_prereleases)](https://github.com/masterzhang233/Tohi-GT7/releases)
+[![Platform](https://img.shields.io/badge/GT7%20desktop-Windows%20x64-0078D4.svg)](#system-requirements)
 [![Status](https://img.shields.io/badge/status-active%20development-orange.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
-**[Weekly updates](https://github.com/KytyPS5/KytyPS5/discussions/862)** — game progress, recent fixes and ongoing development.
+Tohi-GT7 is the GT7 desktop fork maintained by `masterzhang233`, based on
+[usa-ratt/KytyPS5-GT7](https://github.com/usa-ratt/KytyPS5-GT7) and
+[KytyPS5](https://github.com/KytyPS5/KytyPS5). It retains the upstream emulator and its
+contributors' work, with a Chinese launcher, GT7 render profiles, DLSS Super Resolution,
+and experimental Vulkan FSR 3.1 frame generation. The original emulator is based on
+[Kyty](https://github.com/InoriRus/Kyty).
 
-**[Development on Discord](https://discord.gg/UNrkMqGaBg)** — KytyPS5 development.
+**[Downloads and update notes](https://github.com/masterzhang233/Tohi-GT7/releases)** ·
+**[Report a Tohi-GT7 issue](https://github.com/masterzhang233/Tohi-GT7/issues)**
 
-KytyPS5 is a free and open-source PlayStation 5 emulator written in C++ for Windows and Linux,
-with experimental macOS support. It is based on a heavily modified version of
-[Kyty](https://github.com/InoriRus/Kyty). The project is in active development, and behavior
-can change significantly between builds.
+**[Tohi-GT7 1.0.0 — 2026-11-05](https://github.com/masterzhang233/Tohi-GT7/releases/tag/v1.0.0):** the launcher provides one **DLSS** checkbox, enabled by
+default. For desktop GT7 it selects the tested **1920×1080 → 2560×1440** configuration
+(Quality hint, transformer preset K), together with **FSR 3.1.4 2× frame generation**
+and the wheel/occlusion ghosting correction. There is no adjustable DLSS quality menu.
+DLSS requires a compatible NVIDIA RTX GPU; the live acceptance run used an RTX 3080.
+This is a fixed 1080p input, not the standard DLSS Quality input resolution at 1440p.
+
+The latest playtest reported substantially reduced wheel ghosting without a new visible
+artifact. Four complete capture pairs confirmed that frame generation and its correction
+ran. Save progress is retained between normal sessions. These checks do not establish a
+display FPS benchmark or compatibility with every camera, car and track. See the
+[DLSS notes](docs/GT7-DLSS-EXPERIMENT.md) and
+[frame-generation notes](docs/GT7-FSR-FRAME-GENERATION.md) for technical details and limits.
+
+The project and downloads are now named **Tohi-GT7**. Executable names and existing save
+and configuration locations are kept compatible with previous builds.
 
 > [!NOTE]
-> This branch carries work on Gran Turismo 7. See [docs/GT7.md](docs/GT7.md) for the launcher
-> settings it was tested with and its current state. In the game, use the performance mode: the
-> ray tracing (RT) mode works much better now but is not recommended yet.
+> Start the Windows package through `launcher.exe` and follow the
+> [Tohi-GT7 1.0.0 release notes](docs/RELEASE-1.0.0.zh-CN.md).
+> [GT7 documentation](docs/GT7.md) also retains the upstream settings and change log
+> as historical context; they do not replace the current default DLSS preset.
+> In the game, use performance (frame rate) mode. Ray tracing (RT) is not recommended.
 
-> [!TIP]
-> The `masterzhang233` GT7 VR & Render preview adds a prominent launcher panel for
-> SteamVR and internal 3D resolution, with separate desktop output settings.
-> See [GT7 VR and render settings](docs/GT7-VR.md) for the supported game version,
-> Quest 3/Steam Link setup, profile choices, and validation limits.
-
-**Preview 2.3 (2026-11-03):** updates the upstream base to
+The upstream base was updated in Preview 2.3 to
 [`KytyPS5-2026-10-28-f908636`](https://github.com/usa-ratt/KytyPS5-GT7/releases/tag/KytyPS5-2026-10-28-f908636),
 with racing wheel support and graphics/memory changes, while retaining the Chinese launcher,
 SteamVR/render profiles, diagnostics, and both audited GT7 1.71 executable images from Preview 2.2.
 Upgrading from the October 26 base recompiles shaders once. See the
-[Chinese update notes](docs/releases/Preview-2.3.zh-CN.md) and
-[Windows download](https://github.com/masterzhang233/KytyPS5-GT7/releases/tag/KytyPS5-GT7-VR-2026-11-03-preview2.3).
+[historical Chinese update notes](docs/releases/Preview-2.3.zh-CN.md).
 
 > [!IMPORTANT]
-> KytyPS5 is not affiliated with Sony Interactive Entertainment or PlayStation. The project does
+> Tohi-GT7 and KytyPS5 are not affiliated with Sony Interactive Entertainment or PlayStation. This project does
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
 ## Current Status
 
-KytyPS5 can boot 2D games and a selection of 3D games, including titles built with Unreal Engine
+Tohi-GT7's DLSS and frame-generation integration is currently tested on Windows desktop GT7
+**PPSA01317, version 01.710.000**. The launcher focuses on desktop play and does not expose
+the earlier experimental VR launch controls. Their source code and
+[historical development notes](docs/GT7-VR.md) remain available. Linux and macOS retain the upstream build paths, but have
+not received equivalent validation for this integration.
+
+The underlying KytyPS5 emulator can boot 2D games and a selection of 3D games, including titles built with Unreal Engine
 4/5, Unity, and custom engines. External low-level emulation modules are neither required nor
 planned.
 
-Development is currently focused on expanding game compatibility and improving boot reliability.
+Upstream development focuses on expanding game compatibility and improving boot reliability.
 
-Windows and Linux are the primary platforms and receive the most testing.
+Windows and Linux are the upstream project's primary platforms and receive the most testing.
 
 macOS support is experimental. The emulator is built for x86-64 and runs on Apple Silicon under
 Rosetta 2, with Vulkan provided by MoltenVK. A small number of titles have been verified in-game
@@ -60,7 +78,8 @@ Community game test results are available in the
 ## Bugs and Issues
 
 Compatibility, stability, and performance can vary between versions. You may encounter crashes
-or graphical glitches, so please include the version you tested when reporting an issue.
+or graphical glitches, so please include the version you tested and whether **DLSS** was
+enabled when [reporting a Tohi-GT7 issue](https://github.com/masterzhang233/Tohi-GT7/issues).
 
 ## Screenshots
 
@@ -398,7 +417,7 @@ untested generated changes may be closed without review.
 
 ## License
 
-KytyPS5 is licensed under the [GNU General Public License version 2](LICENSE)
+Tohi-GT7 and its KytyPS5 base are licensed under the [GNU General Public License version 2](LICENSE)
 (`GPL-2.0-only`).
 
 This project is based on the original [Kyty](https://github.com/InoriRus/Kyty), which was released
@@ -408,6 +427,9 @@ licenses included with those components.
 
 ## Special Thanks
 
+- [usa-ratt/KytyPS5-GT7](https://github.com/usa-ratt/KytyPS5-GT7) and
+  [KytyPS5](https://github.com/KytyPS5/KytyPS5) — the upstream GT7 work and emulator base;
+  their contributor credits and licenses are retained.
 - [InoriRus/Kyty](https://github.com/InoriRus/Kyty) — KytyPS5 is based on a heavily modified version
   of the original Kyty project.
 - [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4) — reference for understanding PS4

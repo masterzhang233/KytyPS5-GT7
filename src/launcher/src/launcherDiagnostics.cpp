@@ -611,7 +611,7 @@ bool ExportRunBundle(const QString& run_directory, const QString& zip_path, QStr
 		return false;
 	}
 	QByteArray readme =
-	    "KytyPS5 GT7 diagnostic package\n"
+	    "Tohi-GT7 diagnostic package\n"
 	    "\n"
 	    "This package was created locally and was not uploaded automatically. It contains only "
 	    "the allow-listed run summary and text logs. It does not contain the game, save data, "

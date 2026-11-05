@@ -9,6 +9,7 @@ class QProcess;
 class MainDialogPrivate;
 class QSettings;
 class QResizeEvent;
+class QPaintEvent;
 
 class Configuration;
 namespace LauncherDiagnostics {
@@ -32,6 +33,7 @@ public:
 	static void ReadSettings(QSettings& s);
 
 	void resizeEvent(QResizeEvent* event) override;
+	void paintEvent(QPaintEvent* event) override;
 
 private:
 	MainDialogPrivate* m_p = nullptr;

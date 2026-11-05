@@ -21,6 +21,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/presentation/window/gt7FrameGen.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "graphics/vr/openvrBridge.h"
 #include "graphics/vr/openvrRuntimePath.h"
@@ -440,6 +441,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 // The family VulkanCreateDevice asked the readback queue of (ReadbackQueue), or -1: none.
 static uint32_t g_readback_family = static_cast<uint32_t>(-1);
 static uint32_t g_vr_queue_index = UINT32_MAX;
+static uint32_t g_gt7_fsr_present_queue_index = UINT32_MAX;
 
 static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	                                 const std::vector<const char*>& device_extensions) {
@@ -456,6 +458,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// KYTY_FAST_READBACK: 0 none, 2 the universal family's second queue.
 	uint32_t family_queues   = 0;
 	uint32_t transfer_family = static_cast<uint32_t>(-1);
+	uint32_t compute_family = UINT32_MAX;
 	{
 		uint32_t count = 0;
 		physical_device.getQueueFamilyProperties(&count, nullptr);
@@ -464,11 +467,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		family_queues = queue_family < count ? families[queue_family].queueCount : 0;
 		for (uint32_t index = 0; index < count; index++) {
 			const auto flags = families[index].queueFlags;
-			if (index != queue_family && families[index].queueCount != 0 &&
+			if (transfer_family == UINT32_MAX && index != queue_family && families[index].queueCount != 0 &&
 			    (flags & vk::QueueFlagBits::eTransfer) &&
 			    !(flags & (vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute))) {
 				transfer_family = index;
-				break;
+			}
+			if (compute_family == UINT32_MAX && index != queue_family && families[index].queueCount >= 2 &&
+			    (flags & vk::QueueFlagBits::eCompute) && !(flags & vk::QueueFlagBits::eGraphics)) {
+				compute_family = index;
 			}
 		}
 	}
@@ -485,13 +491,27 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	g_vr_queue_index = Vr::SelectDedicatedQueue(Config::VrEnabled() &&
 	    !(vr_dedicated != nullptr && vr_dedicated[0] == '0'), family_queues,
 	    g_readback_family == queue_family);
+	g_gt7_fsr_present_queue_index = UINT32_MAX;
+	graphics.gt7_fsr_compute_family = UINT32_MAX;
+	if (!Config::VrEnabled() && Gt7FrameGen::Requested()) {
+		const uint32_t present_index = g_readback_family == queue_family ? 2u : 1u;
+		if (present_index < family_queues && compute_family != UINT32_MAX) {
+			g_gt7_fsr_present_queue_index = present_index;
+			graphics.gt7_fsr_compute_family = compute_family;
+		} else {
+			std::printf("GT7 FSR FG: disabled; no independent graphics present queue and two compute-only queues\n");
+		}
+	}
 	const float                              queue_priorities[3] = {1.0f, 1.0f, 1.0f};
-	std::array<vk::DeviceQueueCreateInfo, 2> queue_create_infos {};
+	std::array<vk::DeviceQueueCreateInfo, 3> queue_create_infos {};
 	uint32_t                                 queue_create_count = 1;
 	queue_create_infos[0].queueFamilyIndex                      = queue_family;
 	queue_create_infos[0].queueCount       = g_readback_family == queue_family ? 2u : 1u;
 	if (g_vr_queue_index != UINT32_MAX) {
 		queue_create_infos[0].queueCount = g_vr_queue_index + 1u;
+	}
+	if (g_gt7_fsr_present_queue_index != UINT32_MAX) {
+		queue_create_infos[0].queueCount = g_gt7_fsr_present_queue_index + 1u;
 	}
 	queue_create_infos[0].pQueuePriorities = queue_priorities;
 	if (g_readback_family != static_cast<uint32_t>(-1) && g_readback_family != queue_family) {
@@ -499,6 +519,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		queue_create_infos[1].queueCount       = 1;
 		queue_create_infos[1].pQueuePriorities = queue_priorities;
 		queue_create_count                     = 2;
+	}
+	if (graphics.gt7_fsr_compute_family != UINT32_MAX) {
+		auto& compute_info = queue_create_infos[queue_create_count++];
+		compute_info.queueFamilyIndex = graphics.gt7_fsr_compute_family;
+		compute_info.queueCount = 2;
+		compute_info.pQueuePriorities = queue_priorities;
 	}
 
 	vk::PhysicalDeviceColorWriteEnableFeaturesEXT color_write_ext {};
@@ -585,6 +611,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
+	// FidelityFX chooses its FP16 shader permutations from physical-device support.
+	// Enable the matching feature on this device before that backend inspects it.
+	if (graphics.gt7_fsr_compute_family != UINT32_MAX) {
+		features12.shaderFloat16 = supported_features12.shaderFloat16;
+	}
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
 	if (Config::ProfilerEnabled() && supported_features12.hostQueryReset == VK_TRUE) {
 		// The host GPU timeline resets its timestamp queries from the host.
@@ -1523,6 +1554,19 @@ void WindowContext::CreateVulkan() {
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
 		}
+		if (!Config::VrEnabled() && Gt7FrameGen::Requested()) {
+			// The FFX Vulkan runtime loads extension-named entry points, including
+			// functionality promoted to core Vulkan. Enable their advertised aliases.
+			for (const char* extension: {VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+			                            VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+			                            VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+			                            VK_AMD_BUFFER_MARKER_EXTENSION_NAME}) {
+				if (HasExtension(available_extensions, extension) &&
+				    !HasExtension(device_extensions, extension)) {
+					device_extensions.push_back(extension);
+				}
+			}
+		}
 	}
 
 	Gt7DlssHost::AddDeviceExtensions(graphic_ctx, device_extensions);
@@ -1579,6 +1623,22 @@ void WindowContext::CreateVulkan() {
 			where = "off (KYTY_FAST_READBACK=0)";
 		}
 		LOGF("Vulkan readback queue: %s\n", where.c_str());
+	}
+	if (g_gt7_fsr_present_queue_index != UINT32_MAX) {
+		graphic_ctx.device.getQueue(graphic_ctx.queue_family, g_gt7_fsr_present_queue_index,
+		                           &graphic_ctx.gt7_fsr_present_queue);
+		graphic_ctx.device.getQueue(graphic_ctx.gt7_fsr_compute_family, 0,
+		                           &graphic_ctx.gt7_fsr_compute_queue);
+		graphic_ctx.device.getQueue(graphic_ctx.gt7_fsr_compute_family, 1,
+		                           &graphic_ctx.gt7_fsr_acquire_queue);
+		// The AMD runtime allocates outside VMA. Leave room before the guest caches
+		// grow, including its optical flow, interpolation history and proxy swapchain.
+		graphic_ctx.gt7_fsr_vram_reserve_bytes = uint64_t {1536} << 20u;
+		std::printf("GT7 FSR FG queues: game=%u:0 present=%u:%u compute=%u:0 acquire=%u:1\n",
+		            graphic_ctx.queue_family, graphic_ctx.queue_family, g_gt7_fsr_present_queue_index,
+		            graphic_ctx.gt7_fsr_compute_family, graphic_ctx.gt7_fsr_compute_family);
+		Gt7FrameGen::OnQueues(graphic_ctx);
+		std::printf("GT7 FSR FG: reserving 1536 MiB from the guest cache budget\n");
 	}
 
 	if (!graphic_ctx.CreateAllocator()) {

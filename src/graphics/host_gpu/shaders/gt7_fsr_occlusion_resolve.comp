@@ -1,0 +1,32 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(set=0, binding=0) uniform texture2D current_present;
+layout(set=0, binding=1) uniform texture2D original_generated;
+layout(set=0, binding=2, r32ui) uniform readonly uimage2D input_mask;
+layout(set=0, binding=3, rgba8) uniform writeonly image2D output_color;
+layout(push_constant) uniform Push { uvec2 render_size; uvec2 display_size; } pc;
+
+void main() {
+    uvec2 invocation=gl_GlobalInvocationID.xy;
+    if(any(greaterThanEqual(invocation,pc.display_size))) return;
+    ivec2 display=ivec2(pc.display_size);
+    ivec2 render=ivec2(pc.render_size);
+    if(any(equal(pc.render_size,uvec2(0))) ||
+       any(notEqual(textureSize(current_present,0),display)) ||
+       any(notEqual(textureSize(original_generated,0),display)) ||
+       any(notEqual(imageSize(input_mask),render)) ||
+       any(notEqual(imageSize(output_color),display))) return;
+
+    ivec2 pixel=ivec2(invocation);
+    // Nearest native-mask lookup at display pixel centers. This is a binary
+    // selection, not a filter: preserve the selected complete RGBA texel.
+    precise vec2 native_position=(vec2(pixel)+0.5)*vec2(render)/vec2(display);
+    ivec2 native_pixel=clamp(ivec2(floor(native_position)),ivec2(0),render-1);
+    bool fallback=imageLoad(input_mask,native_pixel).r!=0u;
+    vec4 color=fallback ? texelFetch(current_present,pixel,0)
+                        : texelFetch(original_generated,pixel,0);
+    // Both inputs are UNORM views. No transfer-function or HUD operation.
+    imageStore(output_color,pixel,color);
+}

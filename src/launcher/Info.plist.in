@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key><string>KytyPS5</string>
-	<key>CFBundleDisplayName</key><string>KytyPS5</string>
+	<key>CFBundleDisplayName</key><string>Tohi-GT7</string>
 	<key>CFBundleIdentifier</key><string>org.kytyps5.kytyps5</string>
 	<key>CFBundleVersion</key><string>@PROJECT_VERSION@</string>
 	<key>CFBundleShortVersionString</key><string>@PROJECT_VERSION@</string>

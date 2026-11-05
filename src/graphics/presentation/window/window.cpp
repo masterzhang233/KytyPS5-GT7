@@ -23,6 +23,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "graphics/presentation/window/gt7FrameGen.h"
 #include "kytyGitVersion.h"
 #include "libs/controller.h"
 #include "libs/wheelHost.h"
@@ -159,7 +160,7 @@ std::unique_ptr<WindowContext> g_window;
 
 } // namespace
 
-constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
+constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Tohi-GT7";
 
 static void SetPause(WindowLoopState& game, bool flag) {
 	LOGF("Pause: %s\n", flag ? "true" : "false");
@@ -223,7 +224,14 @@ static void GameEventKeyboard(const EventKeyboard& key) {
 					// With a picture of the screen (round 89): capture_<n>.jpg in image-dumps.
 					static uint32_t captures = 0;
 					Bisect::RequestPicture(fmt::format("capture_{:02}", ++captures));
-					FrameGraph::RequestCapture();
+					FrameGraph::RequestCapture(FrameGraph::CaptureRequest::Manual);
+				}
+				break;
+			case SDLK_F10:
+				if (!key.repeat) {
+					// Separate from the heavy F9 input dump. Enabled only by the
+					// explicit FG output-capture diagnostic option; no overlay pause.
+					Gt7FrameGen::RequestOutputCapture();
 				}
 				break;
 			case SDLK_F6:
@@ -991,10 +999,13 @@ void WindowContext::UpdateTitle() {
 
 	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
 	auto text = fmt::format(
-	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
+	    "Tohi-GT7 | [{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
 	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
 	    device_name, processor_name, frame_num, current_fps);
+	if (Gt7FrameGen::Requested()) {
+		text += Gt7FrameGen::IsGenerating() ? " [FSR FG: 2x]" : " [FSR FG: standby]";
+	}
 
 	struct TitleUpdate {
 		SDL_Window*  window;

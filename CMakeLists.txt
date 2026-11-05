@@ -142,7 +142,7 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.0)
+project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 1.0.0)
 
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
@@ -456,8 +456,13 @@ list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
 # Optional GT7 desktop SR uses project-owned conversion/compositing shaders. NGX itself is
 # an explicitly loaded external backend; normal emulator builds do not link its SDK.
+option(KYTY_ENABLE_GT7_FSR_FG "Build experimental GT7 Vulkan FSR 3.1 frame generation" OFF)
 set(gpu_dlss_generated_dir "${PROJECT_BINARY_DIR}/gpu_dlss_shaders")
-foreach(shader_name IN ITEMS gt7_dlss_prepare gt7_dlss_composite)
+set(gpu_dlss_shader_names gt7_dlss_prepare gt7_dlss_composite)
+if(KYTY_ENABLE_GT7_FSR_FG)
+	list(APPEND gpu_dlss_shader_names gt7_fsr_occlusion_mask gt7_fsr_occlusion_resolve)
+endif()
+foreach(shader_name IN LISTS gpu_dlss_shader_names)
 	set(shader_source "${gpu_tiler_shader_dir}/${shader_name}.comp")
 	set(shader_spv "${gpu_dlss_generated_dir}/${shader_name}.spv")
 	set(shader_header "${gpu_dlss_generated_dir}/${shader_name}_spv.h")
@@ -570,6 +575,31 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/stb
 )
 
+# Desktop 2x frame interpolation is loaded at run time; DLSS remains the upscaler.
+# Fetch the pinned, signed SDK runtime with tools/Fetch-GT7-FidelityFX.ps1 first.
+set(KYTY_GT7_FIDELITYFX_SDK "${CMAKE_CURRENT_SOURCE_DIR}/_Build/deps/fidelityfx" CACHE PATH
+    "FidelityFX SDK 1.1.4 headers, bin/amd_fidelityfx_vk.dll, LICENSE.txt, and provenance.json")
+if(KYTY_ENABLE_GT7_FSR_FG)
+	if(NOT WIN32)
+		message(FATAL_ERROR "GT7 FSR frame generation currently requires the Windows Vulkan runtime")
+	endif()
+	foreach(required_file IN ITEMS
+	    include/ffx_api/ffx_api.h include/ffx_api/ffx_api_loader.h
+	    include/ffx_api/ffx_api_types.h include/ffx_api/ffx_framegeneration.h
+	    include/ffx_api/vk/ffx_api_vk.h bin/amd_fidelityfx_vk.dll LICENSE.txt provenance.json)
+		if(NOT EXISTS "${KYTY_GT7_FIDELITYFX_SDK}/${required_file}")
+			message(FATAL_ERROR "Missing FidelityFX dependency ${required_file}; run tools/Fetch-GT7-FidelityFX.ps1")
+		endif()
+	endforeach()
+	set_property(SOURCE "${KYTY_SOURCE_DIR}/graphics/presentation/window/gt7FrameGen.cpp" APPEND PROPERTY
+	    INCLUDE_DIRECTORIES "${KYTY_GT7_FIDELITYFX_SDK}/include")
+	set_property(SOURCE "${KYTY_SOURCE_DIR}/graphics/presentation/window/gt7FrameGen.cpp" APPEND PROPERTY
+	    COMPILE_DEFINITIONS KYTY_GT7_FRAMEGEN_FSR=1)
+else()
+	# The standalone guard helper includes FG-only embedded compute shaders.
+	list(REMOVE_ITEM kyty_emulator_src "${KYTY_SOURCE_DIR}/graphics/presentation/window/gt7FrameGenGuard.cpp")
+endif()
+
 if (KYTY_CLANG_CL)
 	list(APPEND kyty_emulator_link_libraries winpthread)
 	list(APPEND inc_headers
@@ -609,6 +639,12 @@ endfunction()
 
 add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
 add_kyty_full_emulator_test(ajm_atrac9_config_tests "${KYTY_TESTS_DIR}/ajmAtrac9ConfigTests.cpp")
+add_executable(gt7_framegen_camera_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Gt7FrameGenCameraTests.cpp")
+target_include_directories(gt7_framegen_camera_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(gt7_framegen_dcc_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Gt7FrameGenDccTests.cpp")
+target_include_directories(gt7_framegen_dcc_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # Offline batch translation of shaders extracted from game files; a tool, not a test.
 add_kyty_full_emulator_test(shader_batch_tool "${KYTY_TESTS_DIR}/ShaderBatchTool.cpp")
 if(KYTY_CLANG_CL)
@@ -879,6 +915,8 @@ if(NOT KYTY_CLANG_CL)
 endif()
 
 if(BUILD_TESTING)
+	add_test(NAME gt7_framegen_camera COMMAND $<TARGET_FILE:gt7_framegen_camera_tests>)
+	add_test(NAME gt7_framegen_dcc COMMAND $<TARGET_FILE:gt7_framegen_dcc_tests>)
 	add_test(NAME emulator_user_name_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --user-name 1234567890123456)
 	add_test(NAME emulator_user_name_too_long
@@ -956,6 +994,8 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --depth-readback-only)
 	add_test(NAME compute_meta_clear_classification
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --compute-meta-clear-only)
+	add_test(NAME gt7_write_guard
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --gt7-write-guard-only)
 	add_test(NAME buffer_cache_dirty_gc
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-gc-only)
 	add_test(NAME color_render_target_1d
@@ -972,6 +1012,8 @@ if(BUILD_TESTING)
 	endif()
 
 	add_custom_target(kyty_tests DEPENDS
+		gt7_framegen_camera_tests
+		gt7_framegen_dcc_tests
 		ime_dialog_tests
 		ajm_atrac9_config_tests
 		shader_cfg_tests
@@ -1142,6 +1184,42 @@ if(APPLE)
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
+option(KYTY_PACKAGE_DLSS "Install the separately built DLSS backend and NVIDIA runtime" OFF)
+set(KYTY_DLSS_BACKEND_FILE "" CACHE FILEPATH "Separately built kyty_dlss_backend.dll")
+set(KYTY_NGX_SDK_ROOT "" CACHE PATH "External NVIDIA DLSS SDK for runtime packaging")
+if(KYTY_PACKAGE_DLSS)
+	if(NOT WIN32)
+		message(FATAL_ERROR "The packaged DLSS backend requires Windows x64")
+	endif()
+	foreach(required_file IN ITEMS "${KYTY_DLSS_BACKEND_FILE}"
+		"${KYTY_NGX_SDK_ROOT}/lib/Windows_x86_64/rel/nvngx_dlss.dll"
+		"${KYTY_NGX_SDK_ROOT}/LICENSE.txt")
+		if(NOT EXISTS "${required_file}")
+			message(FATAL_ERROR "Missing DLSS release dependency: ${required_file}")
+		endif()
+	endforeach()
+	install(FILES "${KYTY_DLSS_BACKEND_FILE}" DESTINATION . RENAME kyty_dlss_backend.dll)
+	install(FILES "${KYTY_NGX_SDK_ROOT}/lib/Windows_x86_64/rel/nvngx_dlss.dll" DESTINATION .)
+	install(FILES "${KYTY_NGX_SDK_ROOT}/LICENSE.txt" DESTINATION licenses/nvidia)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/NVIDIA-DLSS-NOTICE.md" DESTINATION licenses/nvidia)
+endif()
+if(KYTY_ENABLE_GT7_FSR_FG)
+	add_custom_command(TARGET kyty_emulator POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+			"${KYTY_GT7_FIDELITYFX_SDK}/bin/amd_fidelityfx_vk.dll"
+			"$<TARGET_FILE_DIR:kyty_emulator>/amd_fidelityfx_vk.dll"
+		COMMAND ${CMAKE_COMMAND} -E make_directory
+			"$<TARGET_FILE_DIR:kyty_emulator>/licenses/fidelityfx"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+			"${KYTY_GT7_FIDELITYFX_SDK}/LICENSE.txt"
+			"${KYTY_GT7_FIDELITYFX_SDK}/provenance.json"
+			"$<TARGET_FILE_DIR:kyty_emulator>/licenses/fidelityfx"
+		VERBATIM)
+	install(FILES "${KYTY_GT7_FIDELITYFX_SDK}/bin/amd_fidelityfx_vk.dll" DESTINATION .)
+	install(FILES "${KYTY_GT7_FIDELITYFX_SDK}/LICENSE.txt"
+		"${KYTY_GT7_FIDELITYFX_SDK}/provenance.json"
+		DESTINATION licenses/fidelityfx)
+endif()
 if(WIN32)
 	# Keep the checked GT7 profiles beside the executable: the launcher and CLI
 	# both resolve them relative to kyty_emulator.exe, independent of the cwd.
@@ -1155,10 +1233,13 @@ if(WIN32)
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-LaunchSupport.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Capture-TemporalInputs.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-Test-DLSS.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/GT7-PlaytestState.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/Analyze-GT7-TemporalInputs.py" DESTINATION scripts)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-VR.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-DLSS-EXPERIMENT.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-FSR-FRAME-GENERATION.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.0.zh-CN.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Kyty-MIT.txt" DESTINATION licenses)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-NOTICE.md"

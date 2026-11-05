@@ -2,9 +2,7 @@
 
 #include <QDebug>
 #include <QDir>
-#include <QEventLoop>
 #include <QFile>
-#include <QFutureWatcher>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -12,10 +10,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSaveFile>
-#include <QThread>
 #include <QTimer>
 #include <QUrl>
-#include <QtConcurrentRun>
 
 #include <utility>
 
@@ -86,44 +82,10 @@ LoadResult Parse(const QByteArray& data) {
 	return ret;
 }
 
-LoadResult DownloadOnce() {
-	QNetworkAccessManager manager;
-	QNetworkRequest       request(QUrl(QString::fromLatin1(URL)));
-	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-	                     QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setRawHeader("User-Agent", "Kyty-Launcher");
-
-	auto*      reply = manager.get(request);
-	QEventLoop loop;
-	QTimer     timeout;
-	timeout.setSingleShot(true);
-	QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-	QObject::connect(&timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
-	timeout.start(15000);
-	loop.exec();
-
-	if (!timeout.isActive()) {
-		return {{}, QStringLiteral("Compatibility download timed out")};
-	}
-	if (reply->error() != QNetworkReply::NoError) {
-		return {{}, reply->errorString()};
-	}
-	return Parse(reply->readAll());
-}
-
-LoadResult Download() {
-	auto result = DownloadOnce();
-	for (int retry = 1; retry <= RETRY_COUNT && !result.error.isEmpty(); retry++) {
-		QThread::msleep(static_cast<unsigned long>(RETRY_DELAY_MS * retry));
-		result = DownloadOnce();
-	}
-	return result;
-}
-
 } // namespace
 
 CompatibilityDatabase::CompatibilityDatabase(bool local, QObject* parent)
-    : QObject(parent), m_local(local) {}
+    : QObject(parent), m_network(this), m_local(local) {}
 
 const CompatibilityEntry* CompatibilityDatabase::Find(const QString& title_id) const {
 	const auto entry = m_entries.constFind(TitleKey(title_id));
@@ -151,18 +113,40 @@ void CompatibilityDatabase::Load() {
 		return;
 	}
 
-	auto* watcher = new QFutureWatcher<LoadResult>(this);
-	connect(watcher, &QFutureWatcher<LoadResult>::finished, this, [this, watcher]() {
-		const auto result = watcher->result();
-		watcher->deleteLater();
+	if (!m_loading) {
+		m_loading = true;
+		Fetch(0);
+	}
+}
+
+void CompatibilityDatabase::Fetch(int attempt) {
+	// Keep requests on the UI event loop. Destroying the launcher cancels its replies,
+	// rather than waiting for a global worker's nested network loop and retry sleeps.
+	QNetworkRequest request(QUrl(QString::fromLatin1(URL)));
+	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+	                     QNetworkRequest::NoLessSafeRedirectPolicy);
+	request.setRawHeader("User-Agent", "Tohi-GT7-Launcher/1.0.0");
+	request.setTransferTimeout(15000);
+	auto* reply = m_network.get(request);
+	connect(reply, &QNetworkReply::finished, this, [this, reply, attempt] {
+		auto result = reply->error() == QNetworkReply::NoError
+		                  ? Parse(reply->readAll())
+		                  : LoadResult {{}, reply->errorString()};
+		reply->deleteLater();
 		if (!result.error.isEmpty()) {
+			if (attempt < RETRY_COUNT) {
+				QTimer::singleShot(RETRY_DELAY_MS * (attempt + 1), this,
+				                   [this, attempt] { Fetch(attempt + 1); });
+				return;
+			}
+			m_loading = false;
 			qWarning() << "Could not refresh compatibility database:" << result.error;
 			return;
 		}
-		m_entries = result.entries;
+		m_loading = false;
+		m_entries = std::move(result.entries);
 		emit Updated();
 	});
-	watcher->setFuture(QtConcurrent::run(Download));
 }
 
 void CompatibilityDatabase::SetStatus(const QString& title_id, Configuration::GameStatus status) {

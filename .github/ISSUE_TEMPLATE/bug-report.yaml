@@ -1,20 +1,20 @@
-name: Bug report (this fork)
-description: A crash, freeze, graphics problem or slowdown in a build of this fork.
+name: Tohi-GT7 bug report
+description: A crash, freeze, graphics problem or slowdown in Tohi-GT7.
 title: "[BUG]: "
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for testing. One problem per report, please, and search the existing issues first.
-        See [docs/GT7.md](https://github.com/usa-ratt/KytyPS5-GT7/blob/gt7-eqaa/docs/GT7.md) for the settings the builds are tested with
+        See the [Tohi-GT7 documentation](https://github.com/masterzhang233/Tohi-GT7#readme) for the settings the builds are tested with
         and the problems already known.
 
   - type: input
     id: build
     attributes:
       label: Build
-      description: The release you downloaded (its name, like KytyPS5-2026-10-19-abc1234).
-      placeholder: "KytyPS5-2026-10-19-abc1234"
+      description: The Tohi-GT7 release you downloaded (copy the complete release name).
+      placeholder: "Tohi-GT7 1.0.0 (v1.0.0)"
     validations:
       required: true
 
@@ -52,7 +52,7 @@ body:
     id: settings
     attributes:
       label: Settings changed
-      description: Any launcher setting that differs from docs/GT7.md (resolution, bindless textures, reflections every other frame, ...). Write "none" if none.
+      description: State whether the DLSS checkbox is enabled, your camera and track, and any changed launcher settings (resolution, bindless textures, reflections every other frame, ...). Write "none" if none.
     validations:
       required: true
 
@@ -61,6 +61,6 @@ body:
     attributes:
       label: Log and screenshots
       description: |
-        Zip the log file (_kyty.txt next to kyty_emulator.exe, written with Printf output set to File) and drag the zip here, with any screenshots. If the zip is too large, the last part of the log is the most useful.
+        Use the launcher's diagnostic-package button after a short reproduction and attach the package with any screenshots. Avoid leaving detailed file logging enabled during a long session.
     validations:
       required: false

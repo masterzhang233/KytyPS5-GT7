@@ -3,11 +3,15 @@
 #include "graphics/host_gpu/gt7DlssDevice.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandRecorder.h"
+#include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/frameGraph.h"
+#include "graphics/host_gpu/renderer/gt7FrameGenCamera.h"
+#include "graphics/host_gpu/renderer/gt7FrameGenDcc.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/shader.h"
+#include "graphics/presentation/window/gt7FrameGen.h"
 #include "kernel/memory.h"
 #include "gpu_dlss_shaders/gt7_dlss_prepare_spv.h"
 #include "gpu_dlss_shaders/gt7_dlss_composite_spv.h"
@@ -18,7 +22,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace Libs::Graphics {
 namespace {
@@ -76,6 +83,68 @@ struct ComputePass {
     vk::PipelineLayout layout;
     vk::Pipeline pipeline;
 };
+
+struct FrameGenerationCamera {
+    ImageId depth_id {}, motion_id {};
+    Gt7FrameGenCamera::Matrix view_projection {}, view {}, projection {}, unjittered {};
+    Gt7FrameGenCamera::Parameters parameters {};
+    bool valid = false, rejected = false;
+    const char* reject_reason = nullptr;
+};
+
+enum CameraObservation : size_t {
+    CameraCalls, CameraDepth, CameraMotion, CameraShape, CameraLate, CameraLimit,
+    CameraAlreadyRejected, CameraUser, CameraAddress, CameraUnmapped, CameraGpuDirty,
+    CameraRead, CameraMatrix, CameraChanged, CameraAccepted, CameraObservationCount
+};
+
+bool ConfigureFrameGenerationImage(GraphicContext& graphics, VulkanImage& image, vk::Format format,
+                                    uint32_t width = InputWidth, uint32_t height = InputHeight) {
+    const auto usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc |
+                       vk::ImageUsageFlagBits::eSampled;
+    if (image.image && image.extent == vk::Extent3D {width, height, 1} &&
+        image.format == format && image.image_type == vk::ImageType::e2D &&
+        image.layers == 1 && image.mip_levels == 1 && image.samples == 1 &&
+        (image.usage & usage) == usage) return true;
+    // The presenter has retired all uses of the frame before calling us.
+    if (image.image) graphics.DeleteImage(image);
+    const auto required = vk::FormatFeatureFlagBits::eTransferDst | vk::FormatFeatureFlagBits::eTransferSrc |
+                          vk::FormatFeatureFlagBits::eSampledImage;
+    if ((graphics.GetFormatProperties(format).optimalTilingFeatures & required) != required) return false;
+    vk::ImageCreateInfo create {};
+    create.imageType = vk::ImageType::e2D;
+    create.format = format;
+    create.extent = vk::Extent3D {width, height, 1};
+    create.mipLevels = create.arrayLayers = 1;
+    create.samples = vk::SampleCountFlagBits::e1;
+    create.tiling = vk::ImageTiling::eOptimal;
+    create.usage = usage;
+    create.sharingMode = vk::SharingMode::eExclusive;
+    create.initialLayout = vk::ImageLayout::eUndefined;
+    return graphics.CreateImage(create, image);
+}
+
+void TransitFrameGenerationImage(vk::CommandBuffer command, VulkanImage& image,
+                                 vk::ImageLayout layout, vk::AccessFlags2 access) {
+    const auto stage = access == vk::AccessFlagBits2::eTransferWrite ?
+        vk::PipelineStageFlagBits2::eTransfer : vk::PipelineStageFlagBits2::eAllCommands;
+    vk::ImageMemoryBarrier2 barrier {};
+    barrier.srcStageMask = image.state.pl_stage;
+    barrier.srcAccessMask = image.state.access_mask;
+    barrier.dstStageMask = stage;
+    barrier.dstAccessMask = access;
+    barrier.oldLayout = image.state.layout;
+    barrier.newLayout = layout;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.image;
+    barrier.subresourceRange = vk::ImageSubresourceRange {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    vk::DependencyInfo dependency {};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    command.pipelineBarrier2(dependency);
+    image.state = {stage, access, layout};
+    image.subresource_states.clear();
+}
 
 bool CreatePass(GraphicContext& graphics, ComputePass& pass, std::span<const uint32_t> code,
                 uint32_t sampled, uint32_t storage) {
@@ -157,6 +226,25 @@ struct Gt7Dlss::Impl {
     uint64_t evaluations = 0, composites = 0, cancellations = 0, rejected = 0;
     std::array<uint64_t, 3> composites_by_effect_count {};
     uint64_t boundary_evaluations = 0;
+    uint64_t boundary_composites = 0, fg_frame = 1, fg_copied = 0, fg_snapshots = 0, fg_rejected = 0;
+    uint32_t fg_temporal_attempts = 0;
+    std::vector<FrameGenerationCamera> fg_cameras;
+    std::array<uint32_t, CameraObservationCount> fg_camera_observations {};
+    std::vector<std::array<uint64_t, 2>> fg_draw_signatures;
+    uint32_t fg_candidate_draws = 0;
+    uint64_t fg_camera_match_failures = 0, fg_hudless_captures = 0, fg_hudless_rejections = 0;
+    std::array<std::pair<std::string, uint64_t>, 16> fg_cancel_reasons {};
+    uint64_t fg_tonemap_rejections = 0;
+    ImageId fg_scaled_scene_id {}, fg_output_id {};
+    GuestRange fg_output_range {};
+    vk::Image fg_output_image {};
+    VulkanImage fg_hudless {};
+    std::vector<uint8_t> fg_dcc_snapshot;
+    bool fg_hudless_valid = false;
+    uint32_t fg_tonemap_attempts = 0, fg_ui_draws = 0;
+    Gt7FrameGenCamera::Parameters fg_camera {};
+    float fg_jitter_x = 0.0f, fg_jitter_y = 0.0f, fg_frame_time_ms = 0.0f;
+    bool fg_camera_valid = false, fg_reset = true, fg_input_ambiguous = false;
     bool active = false, reset = true, disabled = false, initialized = false;
     std::chrono::steady_clock::time_point last_time {};
 
@@ -165,6 +253,9 @@ struct Gt7Dlss::Impl {
         LOGF("GT7 DLSS: session summary: evaluated=%llu composited=%llu cancelled=%llu rejected=%llu\n",
             static_cast<unsigned long long>(evaluations), static_cast<unsigned long long>(composites),
             static_cast<unsigned long long>(cancellations), static_cast<unsigned long long>(rejected));
+        if (Gt7FrameGen::Requested())
+            LOGF("GT7 FSR FG: input summary: captured=%llu rejected=%llu\n",
+                 static_cast<unsigned long long>(fg_snapshots), static_cast<unsigned long long>(fg_rejected));
         if (ngx) {
             KytyDlssError error {};
             const auto result = api->destroy_context(ngx, 1, &error);
@@ -174,6 +265,7 @@ struct Gt7Dlss::Impl {
         DestroyPass(graphics.device, composite);
         if (nearest) graphics.device.destroySampler(nearest, nullptr);
         if (linear) graphics.device.destroySampler(linear, nullptr);
+        if (fg_hudless.image) graphics.DeleteImage(fg_hudless);
     }
 
     std::unique_ptr<Image> MakeImage(uint32_t w, uint32_t h, vk::Format format, uint32_t bytes) {
@@ -238,6 +330,8 @@ struct Gt7Dlss::Impl {
 
     bool Reject(const char* reason) {
         reset = true;
+        fg_camera_valid = false;
+        fg_input_ambiguous = true;
         if (Report(++rejected)) LOGF("GT7 DLSS: rejected temporal pass #%llu: %s\n", static_cast<unsigned long long>(rejected), reason);
         return false;
     }
@@ -253,11 +347,42 @@ bool Gt7Dlss::MatchesScene(const RenderColorInfo& color) const {
     return Active() && ((color.image_id && color.image_id == m_impl->scene_id) ||
                         Overlap(color.desc.info.data, m_impl->scene_range));
 }
+bool Gt7Dlss::MatchesWatchedWriteRange(GuestRange range) const {
+    const auto& s = *m_impl;
+    if (!s.active && !s.fg_hudless_valid) return false;
+    auto& textures = s.context.GetTextureCache();
+    return (s.active && textures.WriteOverlapsImage(range, s.scene_id, s.scene_range)) ||
+           (s.fg_hudless_valid && textures.WriteOverlapsImage(range, s.fg_output_id, s.fg_output_range));
+}
 void Gt7Dlss::CancelFrame(const char* reason, bool invalidate_history) {
     auto& s = *m_impl;
-    if (invalidate_history) s.reset = true;
+    // A clear, unbounded writer or later unverified operation must also discard
+    // the already captured display-color scene, even after SR has composited.
+    if (s.fg_hudless_valid) {
+        bool first_for_reason = false;
+        // Title-scene rejections must not hide the first new race failure.
+        // Bound both storage and logging; reason strings are copied once.
+        for (auto& [known_reason, count] : s.fg_cancel_reasons) {
+            if (known_reason.empty()) known_reason = reason;
+            if (known_reason == reason) {
+                first_for_reason = ++count <= 4;
+                break;
+            }
+        }
+        if (++s.fg_hudless_rejections <= 8 || s.fg_hudless_rejections % 300 == 0 || first_for_reason)
+            LOGF("GT7 FSR FG: HUD-less rejected #%llu frame=%llu: %s\n",
+                 static_cast<unsigned long long>(s.fg_hudless_rejections),
+                 static_cast<unsigned long long>(s.fg_frame), reason);
+    }
+    s.fg_hudless_valid = false;
+    if (invalidate_history) {
+        s.reset = true;
+        s.fg_camera_valid = false;
+        s.fg_input_ambiguous = true;
+    }
     if (!s.active) return;
     s.active = false;
+    s.fg_camera_valid = false;
     s.reset = true;
     if (Report(++s.cancellations)) LOGF("GT7 DLSS: cancelled frame #%llu: %s (evaluated=%llu composited=%llu)\n",
         static_cast<unsigned long long>(s.cancellations), reason,
@@ -266,10 +391,26 @@ void Gt7Dlss::CancelFrame(const char* reason, bool invalidate_history) {
 
 void Gt7Dlss::FrameBoundary() {
     auto& s = *m_impl;
+    // Retiring a completed frame is not an unverified writer rejection.
+    if (!s.active) s.fg_hudless_valid = false;
     CancelFrame("scene reached presentation without a verified composite");
     // Motion vectors refer to the previous guest frame, not the previous NGX call.
     if (s.evaluations == s.boundary_evaluations) s.reset = true;
     s.boundary_evaluations = s.evaluations;
+    s.boundary_composites = s.composites;
+    s.fg_temporal_attempts = 0;
+    s.fg_camera_valid = false;
+    s.fg_input_ambiguous = false;
+    s.fg_cameras.clear();
+    s.fg_camera_observations.fill(0);
+    s.fg_candidate_draws = 0;
+    s.fg_scaled_scene_id = {};
+    s.fg_output_id = {};
+    s.fg_output_range = {};
+    s.fg_output_image = nullptr;
+    s.fg_hudless_valid = false;
+    s.fg_tonemap_attempts = s.fg_ui_draws = 0;
+    ++s.fg_frame;
 }
 
 // The recording hooks and the GPU-only methods below share no descriptor-pool
@@ -278,6 +419,8 @@ void Gt7Dlss::FrameBoundary() {
 bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
                        std::span<const RenderColorInfo> colors) {
     auto& s = *m_impl;
+    ++s.fg_temporal_attempts;
+    s.fg_camera_valid = false;
     if (s.active) CancelFrame("new temporal pass before composite");
     if (!pixel.runtime || !*pixel.runtime || pixel.images.size() != 4 ||
         pixel.buffer_sources.size() != 1 || colors.size() != 2 ||
@@ -407,6 +550,63 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     s.scene_id = colors[1].image_id;
     s.scene_range = colors[1].desc.info.data;
     ++s.evaluations;
+    if (s.graphics.gt7_fsr_present_queue && Gt7FrameGen::Requested()) {
+        // Require camera and temporal resources from this guest frame, including
+        // the precise projection jitter used by the producer and resolve.
+        for (const auto& camera : s.fg_cameras) {
+            if (camera.valid && camera.depth_id == pixel.images[0].image_id &&
+                camera.motion_id == pixel.images[1].image_id &&
+                camera.parameters.jitter_ndc_x == constants[20] &&
+                camera.parameters.jitter_ndc_y == constants[21]) {
+                s.fg_camera = camera.parameters;
+                s.fg_camera_valid = true;
+                break;
+            }
+        }
+        const bool failed_camera = !s.fg_camera_valid && s.fg_camera_observations[CameraCalls] != 0;
+        const bool report_failure = failed_camera &&
+            (++s.fg_camera_match_failures <= 8 || s.fg_camera_match_failures % 300 == 0);
+        if (report_failure)
+            LOGF("GT7 FSR FG: camera association failure #%llu frame=%llu (details follow)\n",
+                 static_cast<unsigned long long>(s.fg_camera_match_failures),
+                 static_cast<unsigned long long>(s.fg_frame));
+        if (Report(s.evaluations) || report_failure) {
+            uint32_t valid = 0, depth_matches = 0, motion_matches = 0, pairs = 0, jitter_matches = 0;
+            for (const auto& camera : s.fg_cameras) {
+                valid += camera.valid;
+                const bool depth_match = camera.depth_id == pixel.images[0].image_id;
+                const bool motion_match = camera.motion_id == pixel.images[1].image_id;
+                depth_matches += depth_match; motion_matches += motion_match;
+                pairs += depth_match && motion_match;
+                jitter_matches += camera.parameters.jitter_ndc_x == constants[20] &&
+                                  camera.parameters.jitter_ndc_y == constants[21];
+            }
+            const auto& o = s.fg_camera_observations;
+            LOGF("GT7 FSR FG: camera match frame=%llu candidate_draws=%u observed=%u candidates=%zu valid=%u depth_match=%u motion_match=%u pair_match=%u jitter_match=%u target_depth=%u:%u target_motion=%u:%u jitter_ndc=(%.9g,%.9g) accepted=%u failures=[depth:%u motion:%u shape:%u late:%u limit:%u rejected:%u user:%u address:%u unmapped:%u gpu_dirty:%u read:%u matrix:%u changed:%u]\n",
+                 static_cast<unsigned long long>(s.fg_frame), s.fg_candidate_draws, o[CameraCalls],
+                 s.fg_cameras.size(), valid, depth_matches, motion_matches, pairs, jitter_matches,
+                 pixel.images[0].image_id.index, pixel.images[0].image_id.generation,
+                 pixel.images[1].image_id.index, pixel.images[1].image_id.generation, constants[20], constants[21],
+                 o[CameraAccepted], o[CameraDepth], o[CameraMotion], o[CameraShape], o[CameraLate], o[CameraLimit],
+                 o[CameraAlreadyRejected], o[CameraUser], o[CameraAddress], o[CameraUnmapped],
+                 o[CameraGpuDirty], o[CameraRead], o[CameraMatrix], o[CameraChanged]);
+            for (size_t i = 0; i < std::min(s.fg_cameras.size(), size_t(2)); ++i) {
+                const auto& camera = s.fg_cameras[i];
+                LOGF("GT7 FSR FG: camera candidate[%zu] depth=%u:%u motion=%u:%u valid=%u rejected=%u jitter_ndc=(%.9g,%.9g) reason=%s\n",
+                     i, camera.depth_id.index, camera.depth_id.generation, camera.motion_id.index,
+                     camera.motion_id.generation, camera.valid ? 1u : 0u, camera.rejected ? 1u : 0u,
+                     camera.parameters.jitter_ndc_x, camera.parameters.jitter_ndc_y,
+                     camera.reject_reason ? camera.reject_reason : "none");
+            }
+        }
+        s.fg_jitter_x = evaluate.jitter_x;
+        s.fg_jitter_y = evaluate.jitter_y;
+        // Keep the unclamped duration so the FG backend can detect a pause;
+        // the stable SR backend retains its existing clamped duration above.
+        s.fg_frame_time_ms = s.last_time.time_since_epoch().count() == 0 ? 16.666667f :
+            std::chrono::duration<float, std::milli>(now - s.last_time).count();
+        s.fg_reset = result.reset_used != 0 || s.fg_frame_time_ms > 100.0f;
+    }
     s.last_time = now;
     s.reset = false;
     s.active = true;
@@ -423,5 +623,7 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
 }
 
 #include "gt7DlssComposite.inl"
+
+#include "gt7FrameGenInputs.inl"
 
 } // namespace Libs::Graphics

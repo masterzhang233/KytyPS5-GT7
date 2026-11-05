@@ -2,185 +2,91 @@
 <ui version="4.0">
  <class>MainDialog</class>
  <widget class="QDialog" name="MainDialog">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>900</width>
-    <height>650</height>
-   </rect>
-  </property>
-  <property name="minimumSize">
-   <size>
-    <width>0</width>
-    <height>0</height>
-   </size>
-  </property>
-  <property name="windowTitle">
-   <string>KytyPS5 GT7 - VR &amp; Render | masterzhang233</string>
-  </property>
-  <property name="locale">
-   <locale language="English" country="UnitedStates"/>
-  </property>
-  <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
-    <layout class="QVBoxLayout" name="verticalLayout_5">
-     <item>
-      <widget class="QFrame" name="gt7_feature_panel">
-       <layout class="QVBoxLayout" name="gt7FeatureLayout">
-        <property name="spacing"><number>8</number></property>
-        <item>
-         <layout class="QHBoxLayout" name="gt7TitleLayout">
-          <item>
-           <widget class="QLabel" name="gt7_feature_title">
-            <property name="text"><string>GT7  /  VR &amp; Render</string></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="gt7_feature_credit">
-            <property name="text"><string>masterzhang233 · based on KytyPS5-GT7</string></property>
-            <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item>
-         <widget class="QLabel" name="gt7_feature_summary">
-          <property name="text"><string>Select GT7 to configure internal 3D resolution or launch SteamVR.</string></property>
-          <property name="wordWrap"><bool>true</bool></property>
-         </widget>
-        </item>
-        <item>
-         <layout class="QHBoxLayout" name="gt7ActionLayout">
-          <item>
-           <widget class="QPushButton" name="gt7_start_vr_button">
-            <property name="text"><string>Start in SteamVR</string></property>
-            <property name="toolTip"><string>Selects VR mode and starts the selected GT7 game after version and patch verification. Connect your headset in SteamVR first.</string></property>
-            <property name="autoDefault"><bool>false</bool></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="gt7_settings_button">
-            <property name="text"><string>VR &amp;&amp; render settings</string></property>
-            <property name="autoDefault"><bool>false</bool></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="gt7_feature_hint">
-            <property name="text"><string>Internal 3D size and window output are separate.</string></property>
-            <property name="wordWrap"><bool>true</bool></property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-       </layout>
-      </widget>
-     </item>
-     <item>
-      <layout class="QHBoxLayout" name="horizontalLayout_3">
-       <item>
-        <layout class="QVBoxLayout" name="verticalLayout_3">
-         <item>
-          <widget class="ConfigurationListWidget" name="widget" native="true">
-           <property name="sizePolicy">
-            <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
-             <horstretch>0</horstretch>
-             <verstretch>0</verstretch>
-            </sizepolicy>
-           </property>
-           <property name="minimumSize">
-            <size>
-             <width>400</width>
-             <height>300</height>
-            </size>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
-      </layout>
-     </item>
-     <item>
-      <layout class="QVBoxLayout" name="verticalLayout_4">
-       <item>
-        <widget class="QLabel" name="label_settings_file">
-         <property name="text">
-          <string>TextLabel</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="label_Interpreter">
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
-         </property>
-         <property name="frameShadow">
-          <enum>QFrame::Sunken</enum>
-         </property>
-         <property name="text">
-          <string>TextLabel</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="versionLayout">
-         <item>
-          <widget class="QLabel" name="label_Version">
-           <property name="text">
-            <string>TextLabel</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLabel" name="check_updates_link">
-           <property name="text">
-            <string>&lt;a href=&quot;check&quot;&gt;Check for updates&lt;/a&gt;</string>
-           </property>
-           <property name="textFormat">
-            <enum>Qt::RichText</enum>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="versionSpacer">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="check_updates_on_startup">
-         <property name="text">
-          <string>Check for updates on startup</string>
-         </property>
-        </widget>
-       </item>
-      </layout>
-     </item>
-    </layout>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>1120</width><height>760</height></rect></property>
+  <property name="minimumSize"><size><width>900</width><height>660</height></size></property>
+  <property name="windowTitle"><string>Tohi-GT7 1.0.0</string></property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>14</number></property>
+   <property name="leftMargin"><number>26</number></property>
+   <property name="topMargin"><number>26</number></property>
+   <property name="rightMargin"><number>26</number></property>
+   <property name="bottomMargin"><number>20</number></property>
+   <item>
+    <widget class="QFrame" name="gt7_feature_panel">
+     <layout class="QVBoxLayout" name="gt7FeatureLayout">
+      <property name="spacing"><number>12</number></property>
+      <property name="leftMargin"><number>22</number></property>
+      <property name="topMargin"><number>22</number></property>
+      <property name="rightMargin"><number>22</number></property>
+      <property name="bottomMargin"><number>22</number></property>
+      <item><layout class="QHBoxLayout" name="gt7TitleLayout">
+       <item><widget class="QLabel" name="gt7_feature_title"><property name="text"><string>Tohi-GT7</string></property></widget></item>
+       <item><spacer name="titleSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       <item><widget class="QLabel" name="gt7_release_badge"><property name="text"><string>1.0.0  /  RELEASE</string></property></widget></item>
+      </layout></item>
+      <item><widget class="QLabel" name="gt7_feature_hint"><property name="text"><string>Ready for your next drive.</string></property></widget></item>
+      <item><widget class="QLabel" name="gt7_feature_credit"><property name="text"><string>masterzhang233 · based on KytyPS5-GT7</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="gt7_graphics_panel">
+     <layout class="QHBoxLayout" name="gt7ActionLayout">
+      <property name="leftMargin"><number>20</number></property>
+      <property name="topMargin"><number>16</number></property>
+      <property name="rightMargin"><number>18</number></property>
+      <property name="bottomMargin"><number>16</number></property>
+      <property name="spacing"><number>22</number></property>
+      <item><widget class="QCheckBox" name="gt7_dlss_checkbox">
+       <property name="text"><string>DLSS</string></property>
+       <property name="checked"><bool>true</bool></property>
+       <property name="toolTip"><string>Fixed 1080p to 1440p DLSS with FSR 2x frame generation and wheel ghosting correction. Requires NVIDIA RTX. Changes apply on the next launch.</string></property>
+      </widget></item>
+      <item><widget class="QLabel" name="gt7_feature_summary">
+       <property name="text"><string>1920 x 1080 → 2560 x 1440 · DLSS + FSR 2x frame generation</string></property>
+       <property name="wordWrap"><bool>true</bool></property>
+       <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Preferred"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy></property>
+      </widget></item>
+      <item><widget class="QPushButton" name="gt7_start_button">
+       <property name="minimumSize"><size><width>160</width><height>44</height></size></property>
+       <property name="text"><string>Start game</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="game_library_panel">
+     <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy></property>
+     <layout class="QVBoxLayout" name="libraryLayout">
+      <property name="leftMargin"><number>16</number></property><property name="topMargin"><number>14</number></property><property name="rightMargin"><number>16</number></property><property name="bottomMargin"><number>12</number></property>
+      <item><widget class="QLabel" name="game_library_title"><property name="text"><string>GAME LIBRARY</string></property></widget></item>
+      <item><widget class="ConfigurationListWidget" name="widget" native="true">
+       <property name="minimumSize"><size><width>400</width><height>220</height></size></property>
+      </widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="support_panel">
+     <layout class="QVBoxLayout" name="verticalLayout_4">
+      <property name="leftMargin"><number>16</number></property><property name="topMargin"><number>12</number></property><property name="rightMargin"><number>16</number></property><property name="bottomMargin"><number>12</number></property>
+      <item><widget class="QLabel" name="label_settings_file"><property name="text"><string notr="true">Settings</string></property></widget></item>
+      <item><widget class="QLabel" name="label_Interpreter"><property name="text"><string notr="true">Runtime</string></property></widget></item>
+      <item><widget class="QLabel" name="graphics_credit"><property name="text"><string notr="true">NVIDIA DLSS / NVIDIA GeForce RTX™ · AMD FidelityFX FSR 3.1.4</string></property></widget></item>
+      <item><layout class="QHBoxLayout" name="versionLayout">
+       <item><widget class="QLabel" name="label_Version"><property name="text"><string>Tohi-GT7 1.0.0</string></property></widget></item>
+       <item><spacer name="versionSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       <item><widget class="QLabel" name="check_updates_link"><property name="text"><string>&lt;a href=&quot;check&quot;&gt;Check for updates&lt;/a&gt;</string></property><property name="textFormat"><enum>Qt::RichText</enum></property></widget></item>
+       <item><widget class="QCheckBox" name="check_updates_on_startup"><property name="text"><string>Check for updates on startup</string></property></widget></item>
+      </layout></item>
+     </layout>
+    </widget>
    </item>
   </layout>
  </widget>
- <layoutdefault spacing="6" margin="11"/>
- <customwidgets>
-  <customwidget>
-   <class>ConfigurationListWidget</class>
-   <extends>QWidget</extends>
-   <header>configurationListWidget.h</header>
-   <container>1</container>
-  </customwidget>
- </customwidgets>
+ <layoutdefault spacing="8" margin="11"/>
+ <customwidgets><customwidget><class>ConfigurationListWidget</class><extends>QWidget</extends><header>configurationListWidget.h</header><container>1</container></customwidget></customwidgets>
  <resources/>
  <connections/>
- <buttongroups>
-  <buttongroup name="buttonGroup_Console"/>
- </buttongroups>
 </ui>

@@ -204,7 +204,8 @@ static QStringList GetSaveDataDirs(const Configuration& info) {
 ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
     : QWidget(parent), m_ui(new Ui::ConfigurationListWidget) {
 	m_compatibility = new CompatibilityDatabase(
-	    QCoreApplication::arguments().contains(QStringLiteral("--local")), this);
+	    QCoreApplication::arguments().contains(QStringLiteral("--local")) ||
+	        qEnvironmentVariableIsSet("KYTY_LAUNCHER_UI_SMOKE"), this);
 	m_ui->setupUi(this);
 	ConfigureGameList(m_ui);
 
@@ -302,6 +303,9 @@ void ConfigurationListWidget::UpdateToolbarIcons() {
 }
 
 void ConfigurationListWidget::WriteSettings() {
+	if (qEnvironmentVariableIsSet("KYTY_LAUNCHER_UI_SMOKE")) {
+		return;
+	}
 	QFile                      file = QFile(QDir(".").absoluteFilePath(CONF_FILE_NAME));
 	std::unique_ptr<QSettings> s;
 	if (file.exists()) {
@@ -432,6 +436,8 @@ ConfigurationListWidget::CreateConfiguration(const ConfigurationItem& item) cons
 		info->elf = custom->elf;
 	}
 	info->host_input_mapping = m_global_info.host_input_mapping;
+	// The launcher offers one shared, persistent DLSS preset switch.
+	info->gt7_dlss_enabled = m_global_info.gt7_dlss_enabled;
 	return info;
 }
 
@@ -716,6 +722,11 @@ void ConfigurationListWidget::ScanGameDirectory() {
 		}
 
 		scan_archives(root, root);
+		if (root.exists(eboot_name)) {
+			const auto game_path = NormalizeGameDirectory(root.absolutePath());
+			add_game(root.absolutePath(), game_path, QStringLiteral("."), root.dirName(), false);
+			continue;
+		}
 		QList<QDir> pending_dirs;
 		const auto  root_subdirs =
 		    root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
@@ -773,23 +784,10 @@ void ConfigurationListWidget::ConfigureGt7Rendering() {
 	}
 }
 
-void ConfigurationListWidget::StartGt7Vr() {
-	if (!m_run_enabled || m_selected_item == nullptr ||
-	    m_selected_item->GetInfo().title_id.compare(QStringLiteral("PPSA01317"),
-	                                               Qt::CaseInsensitive) != 0) {
-		return;
-	}
-	auto info = CreateConfiguration(*m_selected_item);
-	info->gt7_vr_enabled = true;
-	info->custom_settings = true;
-	m_selected_item->GetInfo().custom_settings = true;
-	const auto game_path = info->game_path;
-	delete m_custom_infos.take(game_path);
-	m_custom_infos.insert(game_path, info.release());
+void ConfigurationListWidget::SetGt7DlssEnabled(bool enabled) {
+	m_global_info.gt7_dlss_enabled = enabled;
 	WriteSettings();
-	m_selected_item->Update();
 	emit Select();
-	emit Run();
 }
 
 void ConfigurationListWidget::EditConfiguration(bool focus_gt7) {

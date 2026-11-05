@@ -91,7 +91,7 @@ void UpdateChecker::FetchUpdateInfo(const char* url, bool fallback, bool manual)
 	QNetworkRequest request(QUrl(QString::fromLatin1(url)));
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
 	                     QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setRawHeader("User-Agent", "Kyty-Launcher");
+	request.setRawHeader("User-Agent", "Tohi-GT7-Launcher/1.0.0");
 	request.setRawHeader("Accept", "application/vnd.github+json");
 	request.setTransferTimeout(15000);
 
@@ -156,7 +156,7 @@ void UpdateChecker::ShowUpdateResult(const UpdateInfo& info, bool manual) {
 	const auto message = tr("A new build is available.\n\nCurrent: %1\nLatest: %2\n\n"
 	                        "Open the release page to download it?")
 	                         .arg(QString::fromLatin1(KYTY_RELEASE_TAG), info.tag);
-	if (QMessageBox::question(m_parent, tr("KytyPS5 Update"), message,
+	if (QMessageBox::question(m_parent, tr("Tohi-GT7 Update"), message,
 	                          QMessageBox::Open | QMessageBox::Cancel,
 	                          QMessageBox::Open) == QMessageBox::Open) {
 		QDesktopServices::openUrl(info.page_url);

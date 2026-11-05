@@ -1,148 +1,54 @@
-QFrame#gt7_feature_panel {
-    background: palette(alternate-base);
-    border: 1px solid palette(mid);
-    border-left: 4px solid palette(highlight);
-    border-radius: 7px;
-}
-
-QLabel#gt7_feature_title {
-    font-size: 22px;
-    font-weight: 700;
-    color: palette(text);
-}
-
-QLabel#gt7_feature_credit, QLabel#gt7_feature_hint {
-    color: palette(text);
-    font-size: 11px;
-}
-
-QLabel#gt7_feature_summary {
-    font-size: 13px;
-    padding-top: 2px;
-    padding-bottom: 3px;
-}
-
-QPushButton#gt7_start_vr_button, QPushButton#gt7_settings_button {
-    padding: 8px 15px;
-    border: 1px solid palette(mid);
-    border-radius: 5px;
-}
-
-QPushButton#gt7_start_vr_button:enabled {
-    background: palette(highlight);
-    color: palette(highlighted-text);
-    font-weight: 600;
-}
-
-QPushButton#gt7_settings_button:hover {
-    background: palette(midlight);
-}
-
-GameListTreeWidget#cfgs_list {
-    background: transparent;
-    border: 1px solid palette(mid);
-    color: palette(text);
-    outline: 0;
-}
-
-GameListTreeWidget#cfgs_list::item {
-    background: transparent;
-    border-bottom: 1px solid palette(mid);
-    padding: 4px;
-}
-
-GameListTreeWidget#cfgs_list::item:selected {
-    background: palette(highlight);
-    color: palette(highlighted-text);
-}
-
-GameListTreeWidget#cfgs_list QHeaderView::section {
-    background: palette(button);
-    color: palette(button-text);
-    border: 0;
-    border-right: 1px solid palette(mid);
-    border-bottom: 1px solid palette(mid);
-    padding: 5px 6px;
-}
-
-QLineEdit#search_line_edit {
-    background: palette(base);
-    border: 1px solid palette(mid);
-    border-radius: 4px;
-    color: palette(text);
-    padding: 5px 8px;
-    selection-background-color: palette(highlight);
-    selection-color: palette(highlighted-text);
-}
-
-QLineEdit#search_line_edit:focus {
-    border-color: palette(highlight);
-}
-
-QToolButton#global_settings_button,
-QToolButton#input_mapping_button,
-QToolButton#edit_button,
-QToolButton#delete_button {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    padding: 3px;
-}
-
-QToolButton#global_settings_button:hover,
-QToolButton#input_mapping_button:hover,
-QToolButton#edit_button:hover,
-QToolButton#delete_button:hover {
-    background: palette(button);
-    border-color: palette(mid);
-}
-
-QToolButton#global_settings_button:pressed,
-QToolButton#input_mapping_button:pressed,
-QToolButton#edit_button:pressed,
-QToolButton#delete_button:pressed {
-    background: palette(midlight);
-}
-
-QComboBox#game_status_editor {
-    background: transparent;
-    border: 0;
-    color: palette(text);
-    padding-left: 2px;
-}
-
-QComboBox#game_status_editor:focus {
-    background: palette(button);
-    border-radius: 3px;
-}
-
-QComboBox#game_status_editor::drop-down {
-    border: 0;
-}
-
-QComboBox#game_status_editor QAbstractItemView {
-    background: palette(base);
-    color: palette(text);
-    selection-background-color: palette(highlight);
-    selection-color: palette(highlighted-text);
-}
-
-QLineEdit#game_comment_editor {
-    background: transparent;
-    border: 0;
-    color: palette(text);
-    padding-left: 2px;
-    selection-background-color: palette(highlight);
-    selection-color: palette(highlighted-text);
-}
-
-QLineEdit#game_comment_editor:focus {
-    background: palette(base);
-    border: 1px solid palette(mid);
-    border-radius: 3px;
-}
-
-QLabel#game_status_indicator {
-    border: 1px solid palette(base);
-    border-radius: 6px;
-}
+QWidget { color: #ebedf4; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 12px; }
+QDialog { background-color: #141821; }
+QDialog#MainDialog { background: transparent; }
+QLabel { background: transparent; }
+QFrame#gt7_feature_panel { background: rgba(11, 15, 24, 175); border: 1px solid rgba(150, 163, 184, 52); border-radius: 12px; }
+QFrame#gt7_graphics_panel, QFrame#game_library_panel, QFrame#support_panel { background: rgba(10, 13, 20, 226); border: 1px solid rgba(150, 163, 184, 45); border-radius: 10px; }
+QLabel#gt7_feature_title { font-size: 36px; font-weight: 700; letter-spacing: 1px; color: #ffffff; }
+QLabel#gt7_release_badge { color: #ff7580; background: rgba(193, 26, 46, 45); border: 1px solid rgba(255, 73, 92, 90); border-radius: 5px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
+QLabel#gt7_feature_hint { color: #dbe2ed; font-size: 15px; }
+QLabel#graphics_credit, QLabel#gt7_feature_credit, QLabel#label_Version { color: #9da9bb; font-size: 11px; }
+QLabel#gt7_feature_summary { color: #cad3e1; font-size: 12px; }
+QLabel#game_library_title { color: #ec6571; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 0 5px 2px 5px; }
+QCheckBox { spacing: 8px; min-height: 22px; }
+QCheckBox#gt7_dlss_checkbox { font-size: 16px; font-weight: 700; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #657086; border-radius: 3px; background: #202632; }
+QCheckBox::indicator:checked { background: #d52c42; border: 1px solid #ef576a; image: url(:/icons/check.svg); }
+QCheckBox::indicator:hover { border-color: #fb7d8a; }
+QCheckBox::indicator:disabled { border-color: #454b58; }
+QCheckBox:disabled, QLabel:disabled { color: #788293; }
+QPushButton { background: #242b38; border: 1px solid #414a5a; border-radius: 5px; padding: 7px 12px; min-height: 18px; }
+QPushButton:hover { background: #333c4c; border-color: #78869d; }
+QPushButton:pressed { background: #151b26; }
+QPushButton:focus { border-color: #ef6578; }
+QPushButton:disabled { color: #707c8e; background: #1b222d; border-color: #333c4b; }
+QPushButton#gt7_start_button { background: #cc2038; color: #ffffff; border: 1px solid #f24c61; font-weight: 700; font-size: 14px; padding: 3px 18px; }
+QPushButton#gt7_start_button:hover { background: #e9324b; }
+QPushButton#gt7_start_button:pressed { background: #ad152a; }
+QPushButton#gt7_start_button:disabled { color: #b9838c; background: #58222e; border-color: #78333f; }
+GameListTreeWidget#cfgs_list { background: transparent; border: 1px solid #30394a; border-radius: 5px; color: #e9edf5; outline: 0; }
+GameListTreeWidget#cfgs_list::item { background: transparent; border-bottom: 1px solid rgba(120, 141, 166, 35); padding: 6px 4px; }
+GameListTreeWidget#cfgs_list::item:hover { background: rgba(100, 118, 149, 35); }
+GameListTreeWidget#cfgs_list::item:selected { background: rgba(180, 37, 56, 130); color: #ffffff; }
+QHeaderView::section { background: #202633; color: #aebbd0; border: 0; border-right: 1px solid #343e4d; border-bottom: 1px solid #343e4d; padding: 8px 7px; }
+QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit { background: #1c2330; border: 1px solid #414b5d; border-radius: 4px; padding: 5px 7px; selection-background-color: #a72b40; selection-color: white; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #df5368; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #7f8b9e; background: #161c26; border-color: #303847; }
+QComboBox::drop-down { border: 0; width: 20px; }
+QComboBox QAbstractItemView { background: #202733; color: #ecf1fa; border: 1px solid #49556b; selection-background-color: #ad2a40; selection-color: white; }
+QToolButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px; }
+QToolButton:hover { background: #303a4c; border-color: #566177; }
+QToolButton:pressed { background: #17202e; }
+QToolTip { color: #ecf0f8; background: #252d3c; border: 1px solid #657087; padding: 5px; }
+QGroupBox { border: 1px solid #3e495d; border-radius: 6px; margin-top: 10px; padding-top: 13px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #f27686; font-weight: 600; }
+QMenu { background: #1c2330; color: #eff3fa; border: 1px solid #4a566c; }
+QMenu::item { padding: 7px 25px; }
+QMenu::item:selected { background: #a82b3f; }
+QScrollBar:vertical { background: #151b25; width: 11px; margin: 0; }
+QScrollBar:horizontal { background: #151b25; height: 11px; margin: 0; }
+QScrollBar::handle { background: #4b576c; border-radius: 4px; min-height: 25px; min-width: 25px; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QComboBox#game_status_editor, QLineEdit#game_comment_editor { background: transparent; border: 0; padding-left: 2px; }
+QLabel#game_status_indicator { border: 1px solid #303a4b; border-radius: 6px; }

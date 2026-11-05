@@ -1,5 +1,6 @@
 <RCC>
  <qresource prefix="/icons">
+  <file alias="check.svg">icons/check.svg</file>
   <file alias="edit-configuration.svg">icons/edit-configuration.svg</file>
   <file alias="global-settings.svg">icons/global-settings.svg</file>
   <file alias="input-mapping.svg">icons/input-mapping.svg</file>
@@ -9,5 +10,8 @@
  </qresource>
  <qresource prefix="/styles">
   <file alias="launcher.qss">styles/launcher.qss</file>
+ </qresource>
+ <qresource prefix="/images">
+  <file alias="gt7-wallpaper.jpg">images/gt7-wallpaper.jpg</file>
  </qresource>
 </RCC>

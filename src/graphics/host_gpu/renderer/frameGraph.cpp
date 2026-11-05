@@ -136,6 +136,19 @@ constexpr size_t   MaxBuffers     = 8192;
 constexpr size_t   MaxReadbacks   = 64;
 constexpr uint64_t MaxBufferLines = 120000;
 
+bool ManualOnly() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_FG_MANUAL_ONLY");
+		const bool manual = value != nullptr && value[0] == '1' && value[1] == '\0';
+		if (manual) {
+			LOGF("FG 0 manual-only captures: automatic and scheduled requests are ignored "
+			     "(KYTY_FG_MANUAL_ONLY=1)\n");
+		}
+		return manual;
+	}();
+	return enabled;
+}
+
 // KYTY_FRAME_GRAPH=<frame>[,<frame>...]: the frame ends (counted from the start) after which a
 // capture starts, besides F9.
 const std::vector<uint64_t>& ScheduledFrames() {
@@ -447,7 +460,10 @@ void WatchImages() {
 }
 } // namespace
 
-void RequestCapture() {
+void RequestCapture(CaptureRequest request) {
+	if (ManualOnly() && request != CaptureRequest::Manual) {
+		return;
+	}
 	if (!g_requested.exchange(true, std::memory_order_relaxed)) {
 		LOGF("FG 0 capture requested: the next whole frame is logged\n");
 	}
@@ -488,7 +504,8 @@ void OnFrameBoundary(BufferCache& cache) {
 		}
 	}
 	const auto& frames    = ScheduledFrames();
-	const bool  scheduled = std::find(frames.begin(), frames.end(), g_frame_ends) != frames.end();
+	const bool  scheduled = !ManualOnly() &&
+	                       std::find(frames.begin(), frames.end(), g_frame_ends) != frames.end();
 	const bool  requested = g_requested.exchange(false, std::memory_order_relaxed);
 	if (!continued && !requested && !scheduled) {
 		return;

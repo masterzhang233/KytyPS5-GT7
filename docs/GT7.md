@@ -1,15 +1,50 @@
-# Gran Turismo 7 on this branch
+# Gran Turismo 7 in Tohi-GT7
 
-This branch (`gt7-eqaa`) carries work on getting Gran Turismo 7 playable. It builds on the
+## Tohi-GT7 1.0.0 desktop release
+
+For the Windows binary package, fully extract the archive and start **`launcher.exe`**.
+It is the package's user entry point: add your own compatible GT7 directory, select
+the game and launch. Developer capture scripts and standalone probes are source-tree
+tools and are not included in the binary package.
+
+The launcher's **DLSS** checkbox is enabled by default. It selects the fixed
+**1920×1080 → 2560×1440** desktop configuration with DLSS Super Resolution
+(Quality hint, transformer preset K), **Vulkan FSR 3.1.4 2× frame generation** and
+the local wheel/occlusion ghosting correction. The fixed 75% input scale differs
+from the standard recommended DLSS Quality input resolution. There are no adjustable
+DLSS quality settings. This combination needs a compatible NVIDIA RTX GPU; the
+live acceptance run used an RTX 3080 and GT7 **PPSA01317, version 01.710.000**.
+
+Turning **DLSS** off disables this complete combination and uses ordinary desktop
+rendering. Existing save/configuration locations remain compatible. Both checkbox
+states use silent API logging for normal GT7 play; automatic developer captures are
+disabled. Ordinary play requires neither F9/F10 nor manually set environment variables.
+The launcher no longer exposes the earlier VR launch controls.
+
+Use the game's **performance (frame rate) mode**. Ray tracing (RT) is not recommended
+for this release. See the [1.0.0 release notes](RELEASE-1.0.0.zh-CN.md),
+[DLSS implementation notes](GT7-DLSS-EXPERIMENT.md) and
+[frame-generation validation and limits](GT7-FSR-FRAME-GENERATION.md).
+
+## Upstream development context
+
+The following settings, hardware measurements and dated change log record the
+upstream work before Tohi-GT7 1.0.0. They provide historical context for ordinary
+rendering with **DLSS off**; they are not the current default DLSS preset.
+In particular, the old 3840×2160 and `File` logging entries below must not be applied
+to the default 1080p-to-1440p desktop preset. Keep normal play logging silent.
+
+The upstream branch (`gt7-eqaa`) carries work on getting Gran Turismo 7 playable. It builds on the
 `wolverine` branch of [Senaxx/KytyPS5](https://github.com/Senaxx/KytyPS5). Build it as described
-in the [README](../README.md#building); nothing extra is needed.
+in the [README](../README.md#building). The optional Tohi-GT7 DLSS/FSR integration
+requires the additional dependencies described in its implementation notes.
 
 Tested with:
 
 - Game: PPSA01317, version 01.710, from a legally obtained dump. Other versions are untested.
 - PC: Windows 11, NVIDIA RTX 5090, AMD Ryzen 9 7950X3D.
 
-## Launcher settings
+## Historical upstream launcher settings (DLSS off)
 
 These are the settings the game was tested with, in the launcher's **Edit game config** dialog for
 the game. The user profile, audio and notification settings don't matter.
@@ -52,12 +87,16 @@ races in it are untested. It needs **Bindless textures** on in the launcher.
 
 ## Notes
 
-### DLSS Super Resolution development captures
+### Historical DLSS input investigation (source-tree tools)
 
-The `feature/gt7-dlss-sr` development work does **not** enable DLSS in the game yet.
-Before adding a temporal upscaler, the game's pre-resolve colour, depth, motion-vector
-encoding, jitter and history resets must be identified. A two-channel texture is only a
-candidate motion buffer, and the presented surface can already contain TAA and the HUD.
+This section records the early `feature/gt7-dlss-sr` input investigation, before DLSS
+was integrated. **Tohi-GT7 1.0.0 does enable DLSS through its default launcher checkbox**;
+the investigation scripts below are developer tools, not steps required to play, and
+are not shipped in the binary package. Use a source checkout to follow these examples.
+
+The investigation identified the game's pre-resolve colour, depth, motion-vector
+encoding, jitter and history resets. A two-channel texture alone is only a candidate
+motion buffer, and the presented surface can already contain TAA and the HUD.
 
 On Windows, `scripts/GT7-Capture-TemporalInputs.ps1` runs the checked desktop profile in a
 new capture directory. It can copy `_SaveData/PPSA01317` from `-SourceUserDataRoot`; the
@@ -113,12 +152,14 @@ python .\scripts\Analyze-GT7-TemporalInputs.py --log 'D:\capture\_kyty.txt' `
 ```
 
 Its producer/consumer graph and pass rankings are evidence for investigation, not automatic
-assignments of depth or motion-vector semantics. `dlss_ready` remains false. The optional
+assignments of depth or motion-vector semantics. This analyser's `dlss_ready` field
+remains false by design; it does not report the current emulator integration's status. The optional
 standalone `tools/dlss_probe` checks NVIDIA's Vulkan runtime separately; even a successful
 probe does not establish GT7 integration or game image quality.
 
-No environment variables are needed to play. The `KYTY_*` variables mentioned in the commit
-history are for diagnostic runs only.
+No manually set environment variables are needed to play through `launcher.exe`.
+The launcher supplies the fixed preset's runtime environment. The diagnostic variables
+in this historical section are for explicit developer capture sessions only.
 
 **Pop-in on new tracks is expected.** The first time you drive a track (or a part of one), its
 shaders are compiled while you drive, in the background: scenery, cars' details and reflections
@@ -127,8 +168,9 @@ cached, so the second time on the same track things are there from the start. On
 of a new track is in within half a lap; on slower PCs it takes longer. After a graphics driver
 update everything is compiled once more.
 
-To report a problem, open an issue on this repository with the **Bug report** form (attach the
-zipped `_kyty.txt` log).
+To report a problem, open an issue on this repository with the **Bug report** form and
+attach the launcher's diagnostic package. State the release version, DLSS checkbox
+state, track and camera. Avoid enabling long-running API file logging just for a report.
 
 ## What's new (October 28, 2026, second build)
 

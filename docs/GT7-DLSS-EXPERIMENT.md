@@ -1,7 +1,11 @@
-# GT7 desktop DLSS experiment
+# Tohi-GT7 desktop DLSS integration
 
-This is a developer experiment for the verified GT7 1.71 desktop render path.
-It is disabled by default and is not part of the launcher's supported settings.
+This is an experimental integration for the verified GT7 1.71 desktop render path.
+The Tohi-GT7 launcher exposes one **DLSS** checkbox, enabled by default for desktop
+GT7. It selects the fixed configuration below together with the separate
+[Vulkan FSR 3.1 frame-generation path](GT7-FSR-FRAME-GENERATION.md) and its
+occlusion correction. There are no adjustable DLSS quality settings in the GUI.
+Direct emulator launches still require the explicit opt-in environment variables.
 The normal emulator build does not link NVIDIA NGX. Its optional C ABI backend is
 built separately in `tools/dlss_backend` with an external NVIDIA SDK/runtime.
 No game data, SDK files or generated captures belong in this repository.
@@ -9,7 +13,8 @@ The local test runtime inspected on 2026-11-04 reports DLL product version
 `310.9.16.0`. The current renderer requests transformer preset K with the Quality
 hint, using a fixed 1920 by 1080 input and 2560 by 1440 reconstruction. This is a
 custom 75% input scale, not the standard recommended Quality input resolution.
-This integration implements Super Resolution only, with no frame generation.
+The NVIDIA backend implements Super Resolution only; frame generation is supplied
+by AMD FidelityFX, not NVIDIA DLSS Frame Generation.
 
 ## Evidence and limits
 
@@ -124,9 +129,30 @@ and exit code distinguish it from a compatibility-only check; these two check
 switches are mutually exclusive. `-Baseline` uses the original 1080p path. Both use a 2560 by
 1440 desktop window while the final scene/UI render surface remains 4K.
 
-No F9 capture is necessary for a normal playtest. Keep the session manifest and
-logs to verify which passes were evaluated, composited or rejected. Normal
-launches do not enable this path. The opt-in variables are `KYTY_GT7_DLSS=1`,
+Offline progress lives in `_DownloadData/PPSA01317/gt7save.bin`. The script
+copies `_SaveData/PPSA01317`, `_Trophies/PPSA01317` and
+`_DownloadData/PPSA01317` from the latest saved, normally finished successful
+playtest; shader cache still comes from the supplied seed. `-ProgressSearchRoots`
+defaults to the current output root. The local `Start-GT7-DLSS-Playtest.ps1` and
+`Start-GT7-DLSS-FSR-Playtest.ps1` wrappers search both SR and FG output roots, so
+tests share the latest completed progress without repeating the opening
+sequence. Active, failed and graphics-only runs are not selected automatically.
+If no eligible saved playtest exists, the script uses the supplied seed. Old
+runs and original saves are retained. Exit normally after saving to make a
+session eligible for the next test. `-CheckOnly` shows the selected progress
+source and save hash without creating a session.
+
+Ordinary playtests use `--printf-direction Silent` to avoid an unbounded per-API
+trace while driving or waiting in menus. Fatal messages remain in `stdout.log`.
+Use `-DiagnosticLogging` for a short session when DLSS/FG counters or detailed
+API traces are needed; `-CaptureTemporalInputs` enables this logging automatically.
+The manifest records the selected logging mode. Close diagnostic sessions after
+collecting the needed evidence.
+
+No F9 or F10 capture is necessary for ordinary play. Keep the session manifest and
+logs to verify which passes were evaluated, composited or rejected. The launcher
+sets the following variables when its **DLSS** checkbox is enabled. For direct
+emulator launches, the opt-in variables are `KYTY_GT7_DLSS=1`,
 `KYTY_GT7_DLSS_BACKEND=<absolute DLL>` and
 `KYTY_GT7_DLSS_RUNTIME=<absolute directory containing nvngx_dlss.dll>`.
 VR is excluded from this experiment.

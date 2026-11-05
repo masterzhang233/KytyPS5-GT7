@@ -822,6 +822,14 @@ To use your own sound, replace the emulator&apos;s assets/sounds/trophy-unlock.w
         <source>Add</source>
         <translation>添加</translation>
     </message>
+    <message>
+        <source>GT7 graphics preset</source>
+        <translation>GT7 画面预设</translation>
+    </message>
+    <message>
+        <source>Use the DLSS checkbox on the launcher: 1920 x 1080 to 2560 x 1440, with FSR 2x frame generation. Requires an NVIDIA RTX graphics card.</source>
+        <translation>在启动器中勾选 DLSS 即可使用 1920 × 1080 → 2560 × 1440 超分辨率与 FSR 2× 帧生成。需要 NVIDIA RTX 显卡。</translation>
+    </message>
 </context>
 <context>
     <name>ConfigurationItem</name>
@@ -1482,6 +1490,60 @@ Log folder:
 
 %2</translation>
     </message>
+    <message>
+        <source>Tohi-GT7 1.0.0</source>
+        <translation>Tohi-GT7 1.0.0</translation>
+    </message>
+    <message>
+        <source>Tohi-GT7</source>
+        <translation>Tohi-GT7</translation>
+    </message>
+    <message>
+        <source>1.0.0  /  RELEASE</source>
+        <translation>1.0.0  /  正式版</translation>
+    </message>
+    <message>
+        <source>Ready for your next drive.</source>
+        <translation>下一程，即刻出发。</translation>
+    </message>
+    <message>
+        <source>DLSS</source>
+        <translation>DLSS</translation>
+    </message>
+    <message>
+        <source>Fixed 1080p to 1440p DLSS with FSR 2x frame generation and wheel ghosting correction. Requires NVIDIA RTX. Changes apply on the next launch.</source>
+        <translation>固定 1080p → 1440p DLSS，搭配 FSR 2× 帧生成与车轮拖影修正。需要 NVIDIA RTX 显卡，下次启动游戏时生效。</translation>
+    </message>
+    <message>
+        <source>1920 x 1080 → 2560 x 1440 · DLSS + FSR 2x frame generation</source>
+        <translation>1920 × 1080 → 2560 × 1440 · DLSS + FSR 2× 帧生成</translation>
+    </message>
+    <message>
+        <source>Start game</source>
+        <translation>启动游戏</translation>
+    </message>
+    <message>
+        <source>GAME LIBRARY</source>
+        <translation>游戏库</translation>
+    </message>
+    <message>
+        <source>Disable the custom game patches before using the GT7 graphics preset. These profiles require their own verified patch plan.</source>
+        <translation>使用 GT7 画面预设前，请禁用自定义游戏补丁。这些预设需要使用各自经过验证的补丁方案。</translation>
+    </message>
+    <message>
+        <source>The DLSS preset needs the complete Tohi-GT7 release package.
+Missing files: %1
+
+Extract the full package, or turn off DLSS.</source>
+        <translation>DLSS 预设需要完整的 Tohi-GT7 发布包。
+缺少文件：%1
+
+请完整解压发布包，或关闭 DLSS。</translation>
+    </message>
+    <message>
+        <source>Graphics runtime missing</source>
+        <translation>缺少图形运行库</translation>
+    </message>
 </context>
 <context>
     <name>MainDialogPrivate</name>
@@ -1650,6 +1712,26 @@ Open this run&apos;s log folder or export a diagnostic ZIP for analysis.</source
         <location line="+4"/>
         <source>Select GT7 to configure internal 3D resolution or launch SteamVR.</source>
         <translation>选择 GT7 后可设置内部 3D 分辨率或启动 SteamVR。</translation>
+    </message>
+    <message>
+        <source>Start game</source>
+        <translation>启动游戏</translation>
+    </message>
+    <message>
+        <source>Running...</source>
+        <translation>游戏运行中…</translation>
+    </message>
+    <message>
+        <source>1920 x 1080 → 2560 x 1440 · DLSS + FSR 2x frame generation</source>
+        <translation>1920 × 1080 → 2560 × 1440 · DLSS + FSR 2× 帧生成</translation>
+    </message>
+    <message>
+        <source>DLSS and frame generation off · desktop rendering</source>
+        <translation>DLSS 与帧生成已关闭 · 桌面渲染</translation>
+    </message>
+    <message>
+        <source>Select Gran Turismo 7 in the game library to start.</source>
+        <translation>请在游戏库中选择 Gran Turismo 7 后启动。</translation>
     </message>
 </context>
 <context>
@@ -2013,6 +2095,10 @@ Open the release page to download it?</source>
         <location line="+3"/>
         <source>KytyPS5 Update</source>
         <translation>KytyPS5 更新</translation>
+    </message>
+    <message>
+        <source>Tohi-GT7 Update</source>
+        <translation>Tohi-GT7 更新</translation>
     </message>
 </context>
 <context>

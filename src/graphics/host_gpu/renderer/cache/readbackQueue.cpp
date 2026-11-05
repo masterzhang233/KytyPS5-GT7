@@ -79,7 +79,13 @@ ReadbackQueue::~ReadbackQueue() {
 	if (m_queue != nullptr) {
 		// The device may be shutting down after a loss: wait for the queue rather than destroy
 		// what it may use.
-		(void)m_queue.waitIdle();
+		if (m_graphics.gt7_fsr_present_queue != nullptr) {
+			// FFX may drain the whole device while changing interpolation state.
+			Common::LockGuard lock(m_graphics.queue_mutex);
+			(void)m_queue.waitIdle();
+		} else {
+			(void)m_queue.waitIdle();
+		}
 	}
 	for (auto& slot: m_slots) {
 		if (slot.fence != nullptr) {
@@ -246,7 +252,16 @@ ReadbackQueue::Ticket ReadbackQueue::Submit(Job&& job, uint64_t after_tick) {
 	submit.commandBufferCount = 1;
 	submit.pCommandBuffers    = &slot.command;
 	RequireVulkanSuccess(m_graphics.device.resetFences(1, &slot.fence), "reset a readback fence");
-	RequireVulkanSuccess(m_queue.submit(1, &submit, slot.fence), "submit a readback");
+	vk::Result result;
+	if (m_graphics.gt7_fsr_present_queue != nullptr) {
+		// FFX's configuration/drain operations call vkDeviceWaitIdle. Only host
+		// access to this queue shares their lock; GPU fence waits stay independent.
+		Common::LockGuard lock(m_graphics.queue_mutex);
+		result = m_queue.submit(1, &submit, slot.fence);
+	} else {
+		result = m_queue.submit(1, &submit, slot.fence);
+	}
+	RequireVulkanSuccess(result, "submit a readback");
 	slot.job      = std::move(job);
 	slot.sequence = ++m_sequence;
 	m_pending.fetch_add(1, std::memory_order_relaxed);

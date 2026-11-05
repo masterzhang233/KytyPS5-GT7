@@ -6112,6 +6112,276 @@ public:
     std::printf("[host]    %-32s ok\n", name);
   }
 
+  void CheckGt7WriteGuard() {
+    constexpr const char *name = "Gt7WriteGuard";
+    EnsureRuntimeContext();
+    RenderContext context(m_runtime_context);
+    auto &scheduler = context.GetCommandScheduler();
+    HW::Context registers{};
+    HW::UserConfig user_config{};
+    HW::Shader shaders{};
+    scheduler.Begin(registers, user_config, shaders);
+    auto &cache = context.GetTextureCache();
+
+    // Captured race clears after tone-map: none touches the display allocation.
+    // A minimal registered owner exercises the real range query without a 4K backing.
+    constexpr GuestRange display{0x2029e0000ull, 0x1fe0000};
+    ImageInfo range_info{};
+    range_info.data = {display.address, 4};
+    const auto range_owner = TextureCacheTestAccess::InsertImage(cache, range_info);
+    constexpr std::array<GuestRange, 3> race_clears{{
+        {0x123ae40000ull, 0x60000}, {0x123aea0000ull, 0x1000},
+        {0x206a30000ull, 0x28000}}};
+    for (const auto write : race_clears) {
+      Require(name, "captured unrelated clear preserved",
+              !cache.WriteOverlapsImage(write, range_owner, display),
+              "an unrelated captured race clear invalidated the display");
+    }
+    Require(name, "direct and partial pixel writes rejected",
+            cache.WriteOverlapsImage(display, range_owner, display) &&
+                cache.WriteOverlapsImage({display.address - 1, 2}, range_owner, display) &&
+                cache.WriteOverlapsImage({display.End() - 1, 2}, range_owner, display),
+            "a write overlapping the display's first or last byte escaped");
+    Require(name, "adjacent pixel writes preserved",
+            !cache.WriteOverlapsImage({display.address - 4, 4}, range_owner, display) &&
+                !cache.WriteOverlapsImage({display.End(), 4}, range_owner, display),
+            "half-open range boundaries treated adjacent writes as overlap");
+    TextureCacheTestAccess::DeleteImage(cache, range_owner);
+
+    const auto MakeInfo = [](uint64_t address, uint64_t metadata) {
+      ImageInfo info{};
+      info.data = {address, 0x100};
+      info.pixel_format = vk::Format::eR8G8B8A8Unorm;
+      info.guest_format = Prospero::BufferFormat::k8_8_8_8UNorm;
+      info.extent = {4, 4, 1};
+      info.pitch = 4;
+      info.bytes_per_block = 4;
+      info.mip_layout[0] = {0, 64, 4, 4};
+      info.metadata.kind = ImageMetadataKind::Dcc;
+      info.metadata.range = {metadata, 0x100};
+      return info;
+    };
+    const auto watched_info = MakeInfo(display.address, 0x123b000000ull);
+    const auto watched = TextureCacheTestAccess::InsertImage(cache, watched_info);
+    const auto alias_info = MakeInfo(display.address + 0x80, 0x123b100000ull);
+    const auto alias = TextureCacheTestAccess::InsertImage(cache, alias_info);
+    const auto other_info = MakeInfo(display.address + 0x10000, 0x123b200000ull);
+    const auto other = TextureCacheTestAccess::InsertImage(cache, other_info);
+    Require(name, "registered ownership fixtures",
+            TextureCacheTestAccess::Contains(cache, watched) &&
+                TextureCacheTestAccess::Contains(cache, alias) &&
+                TextureCacheTestAccess::Contains(cache, other),
+            "write-guard image records were not registered in the real cache");
+    Require(name, "watched metadata write rejected",
+            cache.WriteOverlapsImage({watched_info.metadata.range.address + 4, 4},
+                                     watched, watched_info.data),
+            "DCC metadata write was treated as unrelated pixel memory");
+    Require(name, "overlapping alias metadata write rejected",
+            cache.WriteOverlapsImage({alias_info.metadata.range.address + 4, 4},
+                                     watched, watched_info.data),
+            "a different cached alias's metadata escaped the ownership query");
+    Require(name, "overlapping alias pixel write rejected",
+            cache.WriteOverlapsImage({alias_info.data.End() - 4, 4},
+                                     watched, watched_info.data),
+            "an overlapping alias's pixel tail escaped the ownership query");
+    Require(name, "unrelated metadata on the same cache page preserved",
+            !cache.WriteOverlapsImage(other_info.metadata.range, watched,
+                                      watched_info.data) &&
+                !cache.WriteOverlapsImage({display.address + 0x200, 4}, watched,
+                                         watched_info.data),
+            "coarse page membership was mistaken for byte-range ownership");
+
+    // A proven expanded-DCC writer may preserve the HUD snapshot only when its
+    // entire destination belongs to metadata, including the video-out alias.
+    Require(name, "exact DCC metadata of watched image or pixel alias",
+            cache.WriteIsOnlyDccMetadata(watched_info.metadata.range, watched,
+                                         watched_info.data) &&
+                cache.WriteIsOnlyDccMetadata(alias_info.metadata.range, watched,
+                                             watched_info.data),
+            "a complete DCC range of a live display alias was not recognized");
+    Require(name, "DCC exception requires an exact complete metadata range",
+            !cache.WriteIsOnlyDccMetadata(
+                {watched_info.metadata.range.address + 4, 4}, watched,
+                watched_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(
+                    {watched_info.metadata.range.address - 4,
+                     watched_info.metadata.range.size + 8}, watched,
+                    watched_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(other_info.metadata.range, watched,
+                                              watched_info.data),
+            "a partial, extended or unrelated metadata write was exempted");
+    Require(name, "DCC exception cannot hide pixel writes or a partial watch",
+            !cache.WriteIsOnlyDccMetadata(watched_info.data, watched,
+                                          watched_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(alias_info.data, watched,
+                                              watched_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(
+                    watched_info.metadata.range, watched,
+                    {watched_info.data.address, watched_info.data.size - 4}),
+            "pixel ownership or the full watched range was bypassed");
+    for (const auto kind : {ImageMetadataKind::Htile, ImageMetadataKind::Cmask,
+                            ImageMetadataKind::None,
+                            static_cast<ImageMetadataKind>(0xff)}) {
+      cache.GetImage(alias).info.metadata.kind = kind;
+      const bool rejected = !cache.WriteIsOnlyDccMetadata(
+          alias_info.metadata.range, watched, watched_info.data);
+      cache.GetImage(alias).info.metadata = alias_info.metadata;
+      Require(name, "DCC exception rejects other or unknown metadata",
+              rejected, "a non-DCC alias metadata range was exempted");
+    }
+    cache.GetImage(alias).info.metadata.range =
+        {watched_info.metadata.range.address + 0x80, 0x100};
+    const bool partial_alias_metadata_rejected = !cache.WriteIsOnlyDccMetadata(
+        watched_info.metadata.range, watched, watched_info.data);
+    cache.GetImage(alias).info.metadata = alias_info.metadata;
+    Require(name, "DCC exception rejects partially touched alias metadata",
+            partial_alias_metadata_rejected,
+            "a second alias's partial metadata overlap escaped");
+    cache.GetImage(watched).info.stencil = watched_info.metadata.range;
+    const bool stencil_overlap_rejected = !cache.WriteIsOnlyDccMetadata(
+        watched_info.metadata.range, watched, watched_info.data);
+    cache.GetImage(watched).info.stencil = {};
+    Require(name, "DCC exception rejects stencil byte overlap",
+            stencil_overlap_rejected,
+            "metadata overlapping watched stencil bytes was exempted");
+    const auto metadata_pixels_info =
+        MakeInfo(watched_info.metadata.range.address + 0x80, 0x123b400000ull);
+    const auto metadata_pixels =
+        TextureCacheTestAccess::InsertImage(cache, metadata_pixels_info);
+    const bool native_pixels_rejected = !cache.WriteIsOnlyDccMetadata(
+        watched_info.metadata.range, watched, watched_info.data);
+    TextureCacheTestAccess::DeleteImage(cache, metadata_pixels);
+    Require(name, "DCC exception rejects metadata reused as native pixels",
+            native_pixels_rejected,
+            "metadata sharing another live image's pixels was exempted");
+    cache.GetImage(watched).info.metadata = {};
+    const bool alias_without_own_metadata = cache.WriteIsOnlyDccMetadata(
+        alias_info.metadata.range, watched, watched_info.data);
+    cache.GetImage(watched).info.metadata = watched_info.metadata;
+    Require(name, "DCC alias can supply metadata to a plain watched image",
+            alias_without_own_metadata,
+            "the ownership proof required metadata on the watched record itself");
+
+    auto depth_info = MakeInfo(0x204a00000ull, 0x123b300000ull);
+    depth_info.pixel_format = vk::Format::eD32SfloatS8Uint;
+    depth_info.guest_format = Prospero::BufferFormat::k32Float;
+    depth_info.stencil = {0x204b00000ull, 0x40};
+    depth_info.metadata.kind = ImageMetadataKind::Htile;
+    const auto depth = TextureCacheTestAccess::InsertImage(cache, depth_info);
+    TextureCacheTestAccess::AssociateStencil(cache, depth, depth_info.stencil);
+    const auto stencil_owners = TextureCacheTestAccess::FindImages(
+        cache, depth_info.stencil.address, depth_info.stencil.size, false);
+    Require(name, "real stencil association fixture",
+            stencil_owners.size() == 1 &&
+                cache.GetImage(stencil_owners.front()).depth_id == depth,
+            "stencil plane did not resolve to its real depth owner");
+    const auto stencil = stencil_owners.front();
+    Require(name, "depth stencil write rejected",
+            cache.WriteOverlapsImage(depth_info.stencil, depth, depth_info.data),
+            "a watched depth image's stencil-plane write escaped");
+    Require(name, "stencil association follows depth owner",
+            cache.WriteOverlapsImage(depth_info.metadata.range, stencil,
+                                     depth_info.stencil) &&
+                cache.WriteOverlapsImage(depth_info.data, stencil,
+                                         depth_info.stencil),
+            "stencil alias lost its depth owner's HTile or pixel ownership");
+    Require(name, "DCC exception rejects depth and stencil owners",
+            !cache.WriteIsOnlyDccMetadata(depth_info.metadata.range, depth,
+                                          depth_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(depth_info.metadata.range, stencil,
+                                              depth_info.stencil),
+            "a depth or associated stencil image was accepted as display DCC");
+
+    constexpr std::array<GuestRange, 5> invalid_ranges{{
+        {}, {0, 4}, {4, 0}, {UINT64_MAX - 1, 4}, {LOWER_ADDRESS_SIZE - 1, 4}}};
+    for (const auto invalid : invalid_ranges) {
+      Require(name, "invalid ranges fail closed",
+              cache.WriteOverlapsImage(invalid, watched, watched_info.data) &&
+                  cache.WriteOverlapsImage(race_clears[0], watched, invalid),
+              "invalid write or watched range was accepted as disjoint");
+      Require(name, "DCC exception rejects invalid ranges",
+              !cache.WriteIsOnlyDccMetadata(invalid, watched, watched_info.data) &&
+                  !cache.WriteIsOnlyDccMetadata(watched_info.metadata.range,
+                                                watched, invalid),
+              "an invalid write or watch obtained a DCC exception");
+    }
+    Require(name, "missing watched image fails closed",
+            cache.WriteOverlapsImage(race_clears[0], {}, watched_info.data),
+            "a missing watched image silently discarded metadata ownership");
+    Require(name, "mismatched watched identity fails closed",
+            cache.WriteOverlapsImage(race_clears[0], other, watched_info.data),
+            "an unrelated live image id was accepted for the watched range");
+    Require(name, "DCC exception requires the matching live watched id",
+            !cache.WriteIsOnlyDccMetadata(watched_info.metadata.range, {},
+                                          watched_info.data) &&
+                !cache.WriteIsOnlyDccMetadata(watched_info.metadata.range, other,
+                                              watched_info.data),
+            "missing or mismatched watched identity obtained a DCC exception");
+    auto &watched_image = cache.GetImage(watched);
+    const auto saved_metadata = watched_image.info.metadata.range;
+    watched_image.info.metadata.range = {UINT64_MAX - 1, 4};
+    const bool invalid_metadata_rejected =
+        cache.WriteOverlapsImage(race_clears[0], watched, watched_info.data);
+    const bool malformed_dcc_rejected = !cache.WriteIsOnlyDccMetadata(
+        alias_info.metadata.range, watched, watched_info.data);
+    watched_image.info.metadata.range = saved_metadata;
+    Require(name, "malformed cached metadata fails closed",
+            invalid_metadata_rejected,
+            "nonempty invalid cached metadata was accepted as unrelated");
+    Require(name, "DCC exception rejects malformed cached metadata",
+            malformed_dcc_rejected,
+            "malformed watched metadata was bypassed through a valid alias");
+    watched_image.info.metadata.range = {};
+    const bool missing_metadata_rejected =
+        cache.WriteOverlapsImage(race_clears[0], watched, watched_info.data);
+    const bool missing_dcc_rejected = !cache.WriteIsOnlyDccMetadata(
+        alias_info.metadata.range, watched, watched_info.data);
+    watched_image.info.metadata.range = saved_metadata;
+    Require(name, "declared metadata needs a valid range",
+            missing_metadata_rejected,
+            "DCC metadata with an unknown range was accepted as unrelated");
+    Require(name, "DCC exception requires every declared metadata range",
+            missing_dcc_rejected,
+            "unknown watched metadata was bypassed through a valid alias");
+
+    const ImageId stale{watched.index, watched.generation + 1};
+    Require(name, "stale watched generation fails closed",
+            cache.WriteOverlapsImage(race_clears[0], stale, watched_info.data),
+            "a stale watched image id was dereferenced or silently accepted");
+    Require(name, "DCC exception rejects a stale watched generation",
+            !cache.WriteIsOnlyDccMetadata(watched_info.metadata.range, stale,
+                                          watched_info.data),
+            "a stale watched image obtained a DCC exception");
+    TextureCacheTestAccess::DeleteImage(cache, alias);
+    Require(name, "retired alias does not retain ownership",
+            !cache.WriteOverlapsImage(alias_info.metadata.range, watched,
+                                      watched_info.data),
+            "an unregistered alias still invalidated a live watched image");
+    Require(name, "retired alias cannot supply a DCC exception",
+            !cache.WriteIsOnlyDccMetadata(alias_info.metadata.range, watched,
+                                          watched_info.data),
+            "an unregistered alias retained a DCC exception");
+    TextureCacheTestAccess::DeleteImage(cache, watched);
+    Require(name, "retired watched image fails closed",
+            !TextureCacheTestAccess::Contains(cache, watched) &&
+                cache.WriteOverlapsImage(race_clears[0], watched,
+                                         watched_info.data),
+            "an unregistered watched image was dereferenced or accepted");
+    Require(name, "DCC exception rejects a retired watched image",
+            !cache.WriteIsOnlyDccMetadata(watched_info.metadata.range, watched,
+                                          watched_info.data),
+            "an unregistered watched image obtained a DCC exception");
+    TextureCacheTestAccess::DeleteImage(cache, depth);
+    Require(name, "retired stencil association fails closed",
+            !TextureCacheTestAccess::Contains(cache, stencil) &&
+                cache.WriteOverlapsImage(race_clears[0], stencil,
+                                         depth_info.stencil),
+            "retiring a depth owner left an accepted stencil association");
+    TextureCacheTestAccess::DeleteImage(cache, other);
+    scheduler.Finish();
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
   void CheckUnifiedTextureCacheFlow() {
     constexpr const char *name = "UnifiedTextureCacheFlow";
     constexpr uintptr_t base = 0x0000000200600000ull;
@@ -42974,6 +43244,11 @@ int main(int argc, char **argv) {
     vulkan.CheckRenderExecutorStencilBindingDiscovery();
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--gt7-write-guard-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckGt7WriteGuard();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--native-indirect-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckNativeIndirectDispatch();
@@ -43201,6 +43476,7 @@ int main(int argc, char **argv) {
   vulkan.CheckGpuTilerCpuParity();
   vulkan.CheckNativeIndirectDispatch();
   CheckComputeLdsLimit(vulkan);
+  vulkan.CheckGt7WriteGuard();
   vulkan.CheckUnifiedTextureCacheFlow();
   vulkan.CheckUnifiedImageViewCache();
   vulkan.CheckPackedTextureComponents();

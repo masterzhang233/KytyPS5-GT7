@@ -1,8 +1,13 @@
-# GT7 desktop internal resolution and SteamVR
+# Historical GT7 render profiles and SteamVR development
 
-This experimental Windows build adds GT7 internal scene scaling and native stereo output to
-SteamVR. Supply your own unpacked game. The release contains no game executable, game resources,
-save data, captured shaders, or generated caches.
+> This document describes the earlier Preview 2.x VR integration and its developer
+> controls. **Tohi-GT7 1.0.0 removes the VR launch controls from the desktop launcher.**
+> The underlying experimental source is retained. For the current desktop experience,
+> use the default-enabled **DLSS** checkbox and the [current README](../README.md).
+
+Preview 2.x added experimental GT7 desktop render profiles and native stereo output
+to SteamVR on Windows. It required an unpacked game supplied by the user. Its packages
+contained no game executable, game resources, save data, captured shaders or generated caches.
 
 Preview 2.3 updates the upstream base from `KytyPS5-2026-10-26-55a02de` to
 [`KytyPS5-2026-10-28-f908636`](https://github.com/usa-ratt/KytyPS5-GT7/releases/tag/KytyPS5-2026-10-28-f908636),
@@ -11,8 +16,10 @@ The Chinese launcher, SteamVR/render profiles, diagnostics and both audited exec
 remain supported. Upgrading from Preview 2.2 crosses a shader compiler change, so shaders are
 compiled again once; the first visit to a track or menu can show missing details or stutter while
 compilation completes. See the [Preview 2.3 Chinese update notes](releases/Preview-2.3.zh-CN.md)
-for upgrade instructions and validation limits. Download this prerelease manually: the launcher's
-GitHub latest-release check does not select prereleases.
+for the historical upgrade instructions and validation limits. Preview 2.3 was
+distributed as a prerelease; these notes remain as development history after its
+download is retired. Current downloads are on the
+[Tohi-GT7 releases page](https://github.com/masterzhang233/Tohi-GT7/releases).
 
 The profiles support **PPSA01317, version 01.710.000**. Compatibility is checked from the
 normalized executable image rather than the outer `eboot.bin` container. The identity covers the
@@ -44,19 +51,19 @@ not rewritten.
 
 An unpacked game folder or its `eboot.bin` is required. These profiles do not support `.zar` archives.
 
-## Launcher
+## Preview 2.x launcher (historical)
 
 The main window has a **GT7 / VR & Render** panel showing the selected mode, internal resolution
 and desktop output. **Start in SteamVR** selects VR mode for the selected game and launches through
 the same strict compatibility check. **VR & render settings** opens the game config at the GT7 controls.
 
-Add your game folder to the existing launcher and select GT7. The GT7 settings offer:
+Add your game folder to the Preview 2.x launcher and select GT7. That version offers:
 
 - **Desktop 3D height:** Native, 1080, 1440 or 2160. Native retains the game's original controller.
 - **SteamVR / Quest:** enables the game's stereo mode and the SteamVR bridge.
 - **VR scale:** 100%, 110%, 120% or 125%. The desktop height selector is disabled while VR is selected.
 
-The existing **Screen resolution** selector controls the desktop output separately. For example,
+The **Screen resolution** selector controls the desktop output separately. For example,
 choose 1440 internal height and 2560×1440 screen output for the corresponding nominal 1:1 profile.
 The internal height controls the native scene-scale input: special passes, shadow maps, LOD and
 allocation sizes are not all forced to the selected dimensions.

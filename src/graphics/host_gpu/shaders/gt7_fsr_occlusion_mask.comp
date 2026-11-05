@@ -1,0 +1,65 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(set=0, binding=0) uniform texture2D current_motion;
+layout(set=0, binding=1) uniform texture2D previous_motion;
+layout(set=0, binding=2, r32ui) uniform uimage2D output_mask;
+layout(push_constant) uniform Push { uvec2 render_size; uvec2 display_size; } pc;
+
+bool finite2(vec2 value) {
+    return !any(isnan(value)) && !any(isinf(value));
+}
+
+vec2 previousMotionBilinear(vec2 position, ivec2 size) {
+    // Position has already passed the inclusive [0, size-1] bounds check.
+    // Manual interpolation avoids depending on RG32F linear-filter support.
+    ivec2 lo=ivec2(floor(position));
+    ivec2 hi=min(lo+ivec2(1),size-1);
+    precise vec2 fraction=position-vec2(lo);
+    vec2 a=texelFetch(previous_motion,lo,0).rg;
+    vec2 b=texelFetch(previous_motion,ivec2(hi.x,lo.y),0).rg;
+    vec2 c=texelFetch(previous_motion,ivec2(lo.x,hi.y),0).rg;
+    vec2 d=texelFetch(previous_motion,hi,0).rg;
+    precise vec2 top=a*(1.0-fraction.x)+b*fraction.x;
+    precise vec2 bottom=c*(1.0-fraction.x)+d*fraction.x;
+    precise vec2 result=top*(1.0-fraction.y)+bottom*fraction.y;
+    return result;
+}
+
+void main() {
+    uvec2 invocation=gl_GlobalInvocationID.xy;
+    if(any(greaterThanEqual(invocation,pc.render_size))) return;
+    ivec2 size=ivec2(pc.render_size);
+    if(any(notEqual(textureSize(current_motion,0),size)) ||
+       any(notEqual(textureSize(previous_motion,0),size)) ||
+       any(notEqual(imageSize(output_mask),size))) return;
+
+    ivec2 pixel=ivec2(invocation);
+    vec2 motion=texelFetch(current_motion,pixel,0).rg;
+    if(!finite2(motion)) return;
+    // Keep the add in FP32 before floor/bounds, matching the captured MV grid.
+    precise vec2 previous_position=vec2(pixel)+motion;
+    if(!finite2(previous_position) || any(lessThan(previous_position,vec2(0.0))) ||
+       any(greaterThan(previous_position,vec2(size-1)))) return;
+
+    vec2 previous=previousMotionBilinear(previous_position,size);
+    if(!finite2(previous)) return;
+    precise float speed_squared=motion.x*motion.x+motion.y*motion.y;
+    precise float previous_speed_squared=previous.x*previous.x+previous.y*previous.y;
+    precise float speed=sqrt(speed_squared);
+    precise float previous_speed=sqrt(previous_speed_squared);
+    // Thresholds are in render pixels, not display pixels. No object/HUD ROI.
+    if(!(speed>=8.0 && previous_speed<speed*0.25)) return;
+
+    precise vec2 midpoint=vec2(pixel)+motion*0.5;
+    if(!finite2(midpoint)) return;
+    ivec2 base=ivec2(floor(midpoint));
+    // Runtime clears the whole R32UI image before this dispatch. Overlapping
+    // forward splats require atomics; no additional dilation is applied.
+    for(int y=0;y<2;y++) for(int x=0;x<2;x++) {
+        ivec2 target=base+ivec2(x,y);
+        if(all(greaterThanEqual(target,ivec2(0))) && all(lessThan(target,size)))
+            imageAtomicOr(output_mask,target,1u);
+    }
+}
