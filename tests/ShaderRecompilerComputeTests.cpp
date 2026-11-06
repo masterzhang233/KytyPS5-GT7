@@ -14498,6 +14498,25 @@ public:
           "view followed the D32 backing");
       RenderExecutorTestAccess::ResetBindings(executor);
 
+      // An inactive HTile address with META_PIPE_ALIGNED retains the existing depth owner.
+      auto pipe_aligned_depth_value = sampled_depth_value;
+      pipe_aligned_depth_value.dwords[6] =
+          (static_cast<uint32_t>((depth_only_htile_address >> 8u) & 0xffu) << 24u) |
+          (1u << 19u);
+      pipe_aligned_depth_value.dwords[7] = static_cast<uint32_t>(depth_only_htile_address >> 16u);
+      const auto pipe_aligned_depth = RenderExecutorTestAccess::ResolveTexture(
+          executor, sampled_depth_resource, pipe_aligned_depth_value);
+      const auto pipe_aligned_depth_view = texture_cache.FindTexture(
+          pipe_aligned_depth.image_id, pipe_aligned_depth.desc);
+      Require(name, "sampled depth with inactive pipe-aligned metadata",
+              pipe_aligned_depth.image_id == depth_only.image_id &&
+                  !pipe_aligned_depth.desc.info.HasMetadata() &&
+                  pipe_aligned_depth_view == sampled_depth_view &&
+                  texture_cache.GetImage(pipe_aligned_depth.image_id).backing.image ==
+                      sampled_depth_backing,
+              "inactive metadata replaced or rejected the current depth backing");
+      RenderExecutorTestAccess::ResetBindings(executor);
+
       // Attachment acquisition consumes pending HTile clears using DB_DEPTH_CLEAR.
       (void)texture_cache.FindDepthTarget(depth_only.image_id, depth_only.desc);
       auto bounds_target = depth_only_target;
@@ -14597,6 +14616,73 @@ public:
                   [](uint32_t value) { return value == std::bit_cast<uint32_t>(0.625f); }),
               "pending clear did not use DB_DEPTH_CLEAR or cleared the next acquisition again");
       DestroyBuffer(&bounds_readback);
+
+      // With tests off, an HTile compression-disabled pass still materializes the fast clear.
+      // Exercise acquisition and GPU readback, including a second pass with no pending clear.
+      auto decompress_readback = CreateHostBuffer(name, depth_bytes * 2,
+          vk::BufferUsageFlagBits::eTransferDst, {});
+      registers.SetDepthControl({});
+      for (uint32_t pass = 0; pass < 2; ++pass) {
+        Require(name, "decompress prior depth contents",
+                texture_cache.ClearImageFromBuffer(scheduler.Current(),
+                    depth_only.desc.info.data.address, depth_only.desc.info.data.size,
+                    std::bit_cast<uint32_t>(0.625f)),
+                "failed to seed depth before in-place decompression");
+        if (pass == 0) {
+          Require(name, "decompress deferred HTile clear",
+                  texture_cache.ClearMeta(depth_only_htile_address),
+                  "depth-only HTile was not registered");
+          auto no_htile_target = depth_only_target;
+          no_htile_target.z_info.htile_acceleration = false;
+          registers.SetDepthRenderTarget(no_htile_target);
+          registers.SetRenderControl({.depth_compress_disable = true});
+          RenderDepthInfo no_htile_depth{};
+          RenderExecutorTestAccess::ResolveRenderDepthTarget(
+              executor, scheduler.Current(), no_htile_depth);
+          registers.SetDepthRenderTarget(depth_only_target);
+          registers.SetRenderControl({});
+          RenderDepthInfo inactive_htile_depth{};
+          RenderExecutorTestAccess::ResolveRenderDepthTarget(
+              executor, scheduler.Current(), inactive_htile_depth);
+          Require(name, "inactive decompression leaves depth unbound",
+                  !no_htile_depth.image_id && !inactive_htile_depth.image_id &&
+                      texture_cache.IsMetaCleared(depth_only_htile_address, 0),
+                  "a pass without HTile or decompression bound depth or consumed its clear");
+        }
+        registers.SetDepthRenderTarget(depth_only_target);
+        registers.SetRenderControl({.depth_compress_disable = true});
+        RenderDepthInfo decompress_depth{};
+        RenderExecutorTestAccess::ResolveRenderDepthTarget(
+            executor, scheduler.Current(), decompress_depth);
+        const auto decompress_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
+            executor, scheduler.Current(), &no_color, 0, decompress_depth);
+        Require(name, "in-place depth decompress acquisition",
+                decompress_depth.image_id == depth_only.image_id &&
+                    !decompress_depth.depth_test_enable &&
+                    !decompress_depth.depth_write_enable &&
+                    !decompress_depth.stencil_test_enable &&
+                    decompress_depth.depth_load_clear_enable == (pass == 0) &&
+                    decompress_rendering.depth_stencil_attachment.depth_clear == (pass == 0) &&
+                    !texture_cache.IsMetaCleared(depth_only_htile_address, 0),
+                "compression-disabled HTile pass did not consume exactly its pending clear");
+        scheduler.BeginRendering(decompress_rendering);
+        scheduler.EndRendering();
+        RenderExecutorTestAccess::ResetBindings(executor);
+        const vk::BufferImageCopy copy{pass * depth_bytes, 0, 0,
+            {vk::ImageAspectFlagBits::eDepth, 0, 0, 1}, {}, depth_only.desc.info.extent};
+        texture_cache.GetImage(depth_only.image_id).Download(
+            std::span{&copy, 1}, decompress_readback.buffer, 0, decompress_readback.size);
+      }
+      scheduler.Current().Handle().pipelineBarrier2(bounds_dependency);
+      scheduler.Finish();
+      const auto decompress_result = ReadBuffer(name, decompress_readback, depth_texels * 2);
+      Require(name, "decompression expands HTile clear once",
+              std::ranges::all_of(std::span{decompress_result}.first(depth_texels),
+                  [](uint32_t value) { return value == std::bit_cast<uint32_t>(0.375f); }) &&
+              std::ranges::all_of(std::span{decompress_result}.subspan(depth_texels),
+                  [](uint32_t value) { return value == std::bit_cast<uint32_t>(0.625f); }),
+              "decompression left stale depth or repeated an already consumed fast clear");
+      DestroyBuffer(&decompress_readback);
       registers.SetDepthClearValue(0.0f);
 
       // DB override copies run with depth and stencil tests disabled.
@@ -38137,10 +38223,37 @@ void CheckDepthTextureEncoding() {
   }};
   auto retained_metadata_address = compressed_descriptor;
   retained_metadata_address.fields[6] &= 0xff000000u;
+  auto pipe_aligned_metadata = disabled_metadata;
+  pipe_aligned_metadata.fields[6] = 1u << 19u;
+  auto pipe_aligned_retained_address = retained_metadata_address;
+  pipe_aligned_retained_address.fields[6] |= 1u << 19u;
+  auto pipe_aligned_msaa = uncompressed_msaa;
+  pipe_aligned_msaa.fields[6] = 1u << 19u;
   Require("DepthTextureEncoding", "disabled metadata with retained address",
           IsSupportedDepthTextureEncoding(disabled_metadata) &&
-              IsSupportedDepthTextureEncoding(retained_metadata_address),
+              IsSupportedDepthTextureEncoding(retained_metadata_address) &&
+              IsSupportedDepthTextureEncoding(pipe_aligned_metadata) &&
+              IsSupportedDepthTextureEncoding(pipe_aligned_retained_address) &&
+              IsSupportedDepthTextureEncoding(pipe_aligned_msaa),
           "uncompressed depth rejected inactive metadata address bits");
+  auto pipe_aligned_r128 = r128_msaa;
+  pipe_aligned_r128.fields[6] = 1u << 19u;
+  Require("DepthTextureEncoding", "R128 retains omitted-dword contract",
+          !IsSupportedDepthTextureEncoding(pipe_aligned_r128, true),
+          "R128 admitted metadata bits outside its four-dword descriptor");
+
+  // Only the inactive pipe-alignment flag is relaxed; DCC and all other controls remain invalid.
+  // COMPRESSION_EN is covered separately with valid and invalid HTile addresses below.
+  for (uint32_t bit = 0; bit < 24; ++bit) {
+    if (bit == 19 || bit == 21) {
+      continue;
+    }
+    auto unsupported_control = pipe_aligned_retained_address;
+    unsupported_control.fields[6] |= 1u << bit;
+    Require("DepthTextureEncoding", "unsupported uncompressed metadata control",
+            !IsSupportedDepthTextureEncoding(unsupported_control),
+            "inactive pipe alignment admitted metadata control bit " + std::to_string(bit));
+  }
 
   const ShaderTextureResource first_use_depth{{
       0x0225fc00u, 0x01600000u, 0x00000000u, 0x91800924u,
@@ -38161,13 +38274,16 @@ void CheckDepthTextureEncoding() {
   dcc_only_control.fields[6] |= 1u << 22u;
   auto non_msaa_iterate_256 = compressed_descriptor;
   non_msaa_iterate_256.fields[6] |= 1u << 10u;
+  auto compressed_without_pipe_alignment = compressed_descriptor;
+  compressed_without_pipe_alignment.fields[6] &= ~(1u << 19u);
   Require(
       "DepthTextureEncoding", "invalid HTILE encoding",
       !IsSupportedDepthTextureEncoding(missing_metadata) &&
           !IsSupportedDepthTextureEncoding(out_of_range_metadata) &&
           !IsSupportedDepthTextureEncoding(unaligned_metadata) &&
           !IsSupportedDepthTextureEncoding(dcc_only_control) &&
-          !IsSupportedDepthTextureEncoding(non_msaa_iterate_256),
+          !IsSupportedDepthTextureEncoding(non_msaa_iterate_256) &&
+          !IsSupportedDepthTextureEncoding(compressed_without_pipe_alignment),
       "compressed sampled depth accepted an unsupported address or control");
 
   std::printf("[host]    %-32s ok\n", "DepthTextureEncoding");
@@ -43214,6 +43330,12 @@ int main(int argc, char **argv) {
     CheckDepthAttachmentWrites();
     CheckDepthFeedbackAspects();
     CheckDynamicRenderingState();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--depth-compatibility-only") == 0) {
+    CheckDepthTextureEncoding();
+    VulkanHarness vulkan;
+    vulkan.CheckRenderExecutorStencilBindingDiscovery();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--polygon-mode-only") == 0) {

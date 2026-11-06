@@ -291,8 +291,11 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	const auto& sc          = hw.GetStencilControl();
 	const auto& sm          = hw.GetStencilMask();
 	const bool  has_stencil = z.stencil_info.format != Prospero::StencilFormat::kInvalid;
-	const bool depth_active = dc.z_enable || dc.depth_bounds_enable ||
-	                          rc.depth_clear_enable || rc.copy_depth_to_color;
+	// An HTile compression-disabled pass must materialize a pending fast clear even
+	// with depth/stencil tests off. Without the attachment, raw depth reads see stale data.
+	const bool depth_active = dc.z_enable || dc.depth_bounds_enable || rc.depth_clear_enable ||
+	                          rc.copy_depth_to_color ||
+	                          (rc.depth_compress_disable && z.z_info.htile_acceleration);
 	const bool stencil_active =
 	    has_stencil && (dc.stencil_enable || rc.stencil_clear_enable || rc.copy_stencil_to_color);
 	if (!depth_active && !stencil_active) {
