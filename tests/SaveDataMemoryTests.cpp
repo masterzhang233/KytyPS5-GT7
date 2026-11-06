@@ -396,6 +396,33 @@ void TestClassicSavePaths() {
 	CHECK(Search(1) == names);
 }
 
+void TestBusyMountPreservesResult() {
+	Reset("BUSYMOUNT");
+	const auto name = DirName("slot");
+	struct SaveDataMount3 mount {};
+	mount.user_id    = 1;
+	mount.dir_name   = &name;
+	mount.mount_mode = 4;
+	mount.blocks     = 48;
+	SaveDataMountResult result {};
+	CHECK(SaveDataMount3(&mount, &result) == OK);
+	const SaveDataMountResult first_result = result;
+	const std::string first_mount_point = result.mount_point.data;
+	const auto first_mount_directory = g_mounted_directory;
+	CHECK(first_mount_point == "/savedata0");
+
+	mount.mount_mode = 32;
+	CHECK(SaveDataMount3(&mount, &result) == SAVE_DATA_ERROR_BUSY);
+	CHECK(std::memcmp(&result, &first_result, sizeof(result)) == 0);
+	CHECK(g_test_mounts.contains(first_mount_point));
+	CHECK(g_test_mounts.at(first_mount_point) == first_mount_directory);
+	CHECK(SaveDataUmount2(0, &result.mount_point) == OK);
+	CHECK(!g_test_mounts.contains(first_mount_point));
+	CHECK(SaveDataMount3(&mount, &result) == OK);
+	CHECK(result.mount_status == 0);
+	CHECK(SaveDataUmount2(0, &result.mount_point) == OK);
+}
+
 void TestSaveAllocations() {
 	Reset("CAPACITY");
 	std::array<SceSaveDataDirName, 2> names {DirName("Options"), DirName("Player")};
@@ -599,7 +626,11 @@ void TestLegacySaves() {
 
 void RunChild(const fs::path& executable, const char* mode) {
 #ifdef _WIN32
-	CHECK(_spawnl(_P_WAIT, executable.string().c_str(), executable.string().c_str(), mode,
+	// The Windows CRT joins argv with spaces without quoting it. Keep argv[0]
+	// together when the executable path contains spaces, so the child sees its mode.
+	const auto executable_name = executable.string();
+	const auto quoted_argv0 = "\"" + executable_name + "\"";
+	CHECK(_spawnl(_P_WAIT, executable_name.c_str(), quoted_argv0.c_str(), mode,
 	              static_cast<char*>(nullptr)) == 0);
 #else
 	const pid_t pid = fork();
@@ -625,6 +656,7 @@ int main(int argc, char** argv) {
 		}
 		return 0;
 	}
+	CHECK(argc == 1);
 	const auto executable = fs::absolute(argv[0]);
 	const auto previous   = fs::current_path();
 	const auto unique     = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -637,6 +669,7 @@ int main(int argc, char** argv) {
 	TestIsolationAndSync();
 	TestFailedWritePreservesSave();
 	TestClassicSavePaths();
+	TestBusyMountPreservesResult();
 	TestSaveAllocations();
 	TestClassicSaveParams();
 	TestLegacySaves();
