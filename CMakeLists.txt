@@ -142,7 +142,7 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 1.0.1)
+project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 1.0.2)
 
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
@@ -1011,6 +1011,8 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --storage-sampled-only)
 	add_test(NAME texture_cache_depth_readback
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --depth-readback-only)
+	add_test(NAME depth_compatibility
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --depth-compatibility-only)
 	add_test(NAME compute_meta_clear_classification
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --compute-meta-clear-only)
 	add_test(NAME gt7_write_guard
@@ -1264,6 +1266,7 @@ if(WIN32)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-FSR-FRAME-GENERATION.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.0.zh-CN.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.1.zh-CN.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.2.zh-CN.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Start-GT7-Desktop.ps1"
 		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/Start-GT7-Desktop.cmd" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)

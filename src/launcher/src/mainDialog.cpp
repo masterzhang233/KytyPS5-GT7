@@ -339,7 +339,7 @@ void MainDialogPrivate::FindInterpreter() {
 		auto lines  = output.split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts);
 
 		if (lines.count() >= 2) {
-			m_ui->label_Version->setText(QStringLiteral("Tohi-GT7 1.0.1"));
+			m_ui->label_Version->setText(QStringLiteral("Tohi-GT7 1.0.2"));
 			m_ui->label_Version->setToolTip(
 			    tr("Version: ") + (lines.at(0).startsWith("exe_name") ? lines.at(1) : lines.at(0)) +
 			    QStringLiteral("\n") + m_interpreter);
