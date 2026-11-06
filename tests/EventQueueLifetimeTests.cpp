@@ -34,6 +34,9 @@ void TestPeriodicTimerEvents() {
 	Check(EventQueue::KernelAddTimerEvent(EventQueue::KERNEL_EQUEUE_INVALID, 10, 1000, nullptr) ==
 	          KERNEL_ERROR_EBADF,
 	      "timer rejects invalid queue");
+	Check(EventQueue::KernelDeleteTimerEvent(EventQueue::KERNEL_EQUEUE_INVALID, 10) ==
+	          KERNEL_ERROR_EBADF,
+	      "timer deletion rejects invalid queue");
 	EventQueue::KernelEqueue queue = EventQueue::KERNEL_EQUEUE_INVALID;
 	Check(EventQueue::KernelCreateEqueue(&queue, "periodic-timer") == OK, "create timer queue");
 	auto* user_data = reinterpret_cast<void*>(0x1234);
@@ -62,8 +65,14 @@ void TestPeriodicTimerEvents() {
 	      "timer update preserves accumulated occurrences and updates userdata");
 	Check(EventQueue::KernelWaitEqueue(queue, events, 2, &out, &timeout) == KERNEL_ERROR_ETIMEDOUT,
 	      "timer update replaces the repeating interval");
-	Check(EventQueue::KernelDeleteEvent(queue, 10, EventQueue::KERNEL_EVFILT_TIMER) == OK,
-	      "delete periodic timer");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == OK, "delete periodic timer");
+	Check(EventQueue::KernelAddTimerEvent(queue, 10, 1000, user_data) == OK,
+	      "add periodic timer for deletion before next occurrence");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == OK, "delete pending periodic timer");
+	timeout = 5000;
+	Check(EventQueue::KernelWaitEqueue(queue, events, 2, &out, &timeout) == KERNEL_ERROR_ETIMEDOUT,
+	      "deleted periodic timer does not fire after its interval");
+	timeout = 0;
 
 	Check(EventQueue::KernelAddTimerEvent(queue, 10, 0, user_data) == OK,
 	      "add immediate periodic timer");
@@ -76,12 +85,17 @@ void TestPeriodicTimerEvents() {
 		          events[0].data == 1,
 		      "zero interval remains immediately ready after delivery");
 	}
-	Check(EventQueue::KernelDeleteEvent(queue, 10, EventQueue::KERNEL_EVFILT_TIMER) == OK,
-	      "delete immediate timer");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == OK, "delete immediate timer");
+	Check(EventQueue::KernelWaitEqueue(queue, events, 2, &out, &timeout) == KERNEL_ERROR_ETIMEDOUT,
+	      "deleted timer is not delivered again");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == KERNEL_ERROR_ENOENT,
+	      "deleting a missing timer reports ENOENT");
 
 	const Libs::LibKernel::KernelTimespec delay {0, 1000000};
 	Check(EventQueue::KernelAddHRTimerEvent(queue, 10, &delay, user_data) == OK,
 	      "add high resolution timer");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == KERNEL_ERROR_ENOENT,
+	      "periodic timer deletion does not delete a high resolution timer with the same id");
 	timeout = 100000;
 	Check(EventQueue::KernelWaitEqueue(queue, events, 2, &out, &timeout) == OK && out == 1 &&
 	          events[0].filter == EventQueue::KERNEL_EVFILT_HRTIMER && events[0].udata == user_data,
@@ -89,6 +103,8 @@ void TestPeriodicTimerEvents() {
 	Check(EventQueue::KernelDeleteHRTimerEvent(queue, 10) == KERNEL_ERROR_ENOENT,
 	      "high resolution timer is removed after one delivery");
 	Check(EventQueue::KernelDeleteEqueue(queue) == OK, "delete timer queue");
+	Check(EventQueue::KernelDeleteTimerEvent(queue, 10) == KERNEL_ERROR_EBADF,
+	      "timer deletion rejects a deleted queue");
 }
 
 void CountDeletedEvent(EventQueue::KernelEqueue, EventQueue::KernelEqueueEvent* event) {
