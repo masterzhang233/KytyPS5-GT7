@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -40,6 +41,73 @@ struct FontRenderSurface {
     uint32_t system_use[22];
 };
 struct FontRenderResult;
+struct FontMemory;
+struct FontCreateStringDetail;
+struct FontTextSource;
+union FontTextParseResult;
+using FontTextParseFunction = KYTY_SYSV_ABI int (*)(FontTextSource*, void**, FontTextParseResult*);
+struct FontTextSource {
+    uint64_t system_use0;
+    const void* start;
+    const void* end;
+    const void* current;
+    FontTextParseFunction text_parser;
+    void* text_object;
+    void* default_font;
+    void* system_use[5];
+};
+struct FontWriting { void* system_use[32]; };
+struct FontWritingExtent { float top; float bottom; float left; float right; };
+struct FontWritingMetrics {
+    float advance_x;
+    float advance_y;
+    FontWritingExtent extent;
+};
+struct FontWritingStep {
+    float x;
+    float y;
+    float advance_x;
+    float advance_y;
+    void* font;
+    struct { uint32_t character_count : 8; uint32_t invisible_glyph : 1; } profile;
+    uint32_t glyph_code;
+    struct { float x; float y; } positioning;
+    FontGlyphMetrics glyph_metrics;
+};
+struct FontWritingLetterStep {
+    float x;
+    float y;
+    float advance_x;
+    float advance_y;
+    struct {
+        uint32_t texts_count;
+        uint32_t texts_index;
+        uint32_t glyphs_count;
+        uint32_t glyphs_index;
+        uint8_t base_components_count;
+        uint8_t base_components_index;
+        uint8_t base_focus_count;
+        uint8_t base_focus_index;
+        uint8_t opposite_direction;
+        uint8_t character_text_count;
+        uint8_t base_text_count;
+        uint8_t mark_text_count;
+        uint32_t marks_text_count;
+        uint32_t marks_text_number;
+        uint32_t reserved[3];
+        int32_t text_letter_offset;
+    } components;
+};
+struct FontWritingLineStep {
+    float x;
+    float y;
+    float advance_x;
+    float advance_y;
+    float spacing_progress;
+    void* writing_orderer;
+    struct { float x; float y; } adjusting;
+    FontWritingMetrics metrics;
+};
 int KYTY_SYSV_ABI FontOpenFontMemory(void*, const void*, uint32_t, const void*, void**);
 int KYTY_SYSV_ABI FontCloseFont(void*);
 int KYTY_SYSV_ABI FontSetScalePixel(void*, float, float);
@@ -48,6 +116,22 @@ int KYTY_SYSV_ABI FontGetKerning(void*, uint32_t, uint32_t, FontKerning*);
 void KYTY_SYSV_ABI FontRenderSurfaceInit(FontRenderSurface*, void*, int, int, int, int);
 int KYTY_SYSV_ABI FontRenderCharGlyphImageHorizontal(void*, uint32_t, FontRenderSurface*, float,
                                                    float, FontGlyphMetrics*, FontRenderResult*);
+int KYTY_SYSV_ABI FontTextSourceInit(FontTextSource*, const void*, uint32_t, FontTextParseFunction, void*);
+int KYTY_SYSV_ABI FontTextSourceSetDefaultFont(FontTextSource*, void*);
+int KYTY_SYSV_ABI FontCreateString(const FontMemory*, FontTextSource*, const FontCreateStringDetail*, void**);
+int KYTY_SYSV_ABI FontDestroyString(void**);
+const void* KYTY_SYSV_ABI FontStringRefersTextCharacters(void*, uint32_t*);
+const void* KYTY_SYSV_ABI FontStringRefersRenderCharacters(void*, const void*, const void*, uint32_t*);
+const void* KYTY_SYSV_ABI FontCharacterRefersTextNext(const void*);
+int KYTY_SYSV_ABI FontWritingInit(FontWriting*, void*, const void*);
+const FontWritingStep* KYTY_SYSV_ABI FontWritingRefersRenderStep(FontWriting*);
+const void* KYTY_SYSV_ABI FontWritingRefersRenderStepCharacter(FontWriting*, const void**);
+int KYTY_SYSV_ABI FontWritingGetRenderMetrics(FontWriting*, FontWritingMetrics*);
+int KYTY_SYSV_ABI FontCreateWritingLine(const FontMemory*, int, const void*, void**);
+int KYTY_SYSV_ABI FontDestroyWritingLine(void**);
+int KYTY_SYSV_ABI FontWritingLineWritesOrder(void*, uint64_t, const FontWritingMetrics*, void*);
+FontWritingLineStep* KYTY_SYSV_ABI FontWritingLineRefersRenderStep(void*);
+int KYTY_SYSV_ABI FontWritingLineGetRenderMetrics(void*, FontWritingMetrics*);
 } // namespace Libs::Font
 
 namespace {
@@ -92,6 +176,158 @@ Glyph Render(void* font, uint32_t code) {
               std::memcmp(&query, &glyph.metrics, sizeof(query)) == 0,
               "measured and rendered glyphs use different metrics");
     return glyph;
+}
+
+void CheckNear(float actual, float expected, const char* message) {
+    CheckFont(std::abs(actual - expected) < 0.0001f, message);
+}
+
+struct TextString {
+    void* handle = nullptr;
+    TextString(void* font, const char* text) {
+        using namespace Libs::Font;
+        FontTextSource source {};
+        CheckFont(FontTextSourceInit(&source, text, static_cast<uint32_t>(std::strlen(text)),
+                                     nullptr, nullptr) == 0 &&
+                  FontTextSourceSetDefaultFont(&source, font) == 0 &&
+                  FontCreateString(nullptr, &source, nullptr, &handle) == 0 && handle,
+                  "could not create writing string");
+    }
+    ~TextString() { Libs::Font::FontDestroyString(&handle); }
+    TextString(const TextString&) = delete;
+};
+
+void TestFontWriting(void* latin, void* bundled) {
+    using namespace Libs::Font;
+    // Wide/narrow Latin followed by two CJK characters missing from the original face.
+    TextString mixed(latin, "Wi\xe4\xb8\xad\xe6\x96\x87");
+    TextString empty(latin, "");
+    TextString other(latin, "X");
+    uint32_t count = 99;
+    std::array<const void*, 4> characters {};
+    characters[0] = FontStringRefersTextCharacters(mixed.handle, &count);
+    CheckFont(characters[0] && count == characters.size(), "UTF-8 writing character count incorrect");
+    for (size_t i = 1; i < characters.size(); ++i)
+        characters[i] = FontCharacterRefersTextNext(characters[i - 1]);
+    CheckFont(characters.back() && !FontCharacterRefersTextNext(characters.back()),
+              "text character iteration does not terminate");
+    CheckFont(FontStringRefersRenderCharacters(mixed.handle, nullptr, characters.back(), &count) ==
+                  characters.front() && count == 4, "inclusive range dropped the final character");
+    CheckFont(FontStringRefersRenderCharacters(mixed.handle, characters.back(), characters.back(), &count) ==
+                  characters.back() && count == 1, "single-character range is empty");
+    CheckFont(FontStringRefersRenderCharacters(mixed.handle, characters[1], nullptr, &count) ==
+                  characters[1] && count == 3, "open-ended range count incorrect");
+    CheckFont(!FontStringRefersRenderCharacters(mixed.handle, characters.back(), characters.front(), &count) &&
+                  count == 0, "reversed render range must be empty");
+    const auto* foreign = FontStringRefersTextCharacters(other.handle, nullptr);
+    CheckFont(!FontStringRefersRenderCharacters(mixed.handle, characters.front(), foreign, &count) &&
+                  count == 0, "unreachable final character must be rejected");
+    CheckFont(!FontStringRefersRenderCharacters(mixed.handle, characters.front(), foreign, nullptr),
+              "invalid range accepted when the count output is omitted");
+    CheckFont(!FontStringRefersRenderCharacters(empty.handle, nullptr, nullptr, &count) && count == 0 &&
+              !FontStringRefersRenderCharacters(nullptr, nullptr, nullptr, &count) && count == 0,
+              "empty or null string must have no render characters");
+
+    FontWriting writing {};
+    FontWritingMetrics metrics {};
+    CheckFont(FontWritingInit(&writing, mixed.handle, nullptr) == 0 &&
+              FontWritingGetRenderMetrics(&writing, &metrics) == 0 && metrics.advance_x == 0 &&
+              metrics.extent.left == 0 && metrics.extent.right == 0 &&
+              metrics.extent.top == 0 && metrics.extent.bottom == 0,
+              "writing metrics must be empty before the first step");
+    const void* letter_output = &writing;
+    CheckFont(!FontWritingRefersRenderStepCharacter(&writing, &letter_output) && !letter_output,
+              "character exposed before requesting a render step");
+    constexpr std::array<uint32_t, 4> codes {'W', 'i', 0x4e2d, 0x6587};
+    std::array<Glyph, 4> reference;
+    for (size_t i = 0; i < codes.size(); ++i) reference[i] = Render(latin, codes[i]);
+    CheckFont(reference[0].metrics.horizontal.advance > reference[1].metrics.horizontal.advance,
+              "Latin fixture should distinguish wide and narrow glyph advances");
+    CheckFont(reference[2].pixels == Render(bundled, codes[2]).pixels,
+              "writing fixture did not select bundled CJK fallback");
+    float pen = 0;
+    FontWritingExtent expected_extent {};
+    for (size_t i = 0; i < codes.size(); ++i) {
+        const auto* step = FontWritingRefersRenderStep(&writing);
+        CheckFont(step && step->glyph_code == codes[i] && step->font == latin &&
+                  step->profile.character_count == 1, "writing step skipped or repeated a character");
+        CheckNear(step->x, pen, "render step pen did not accumulate font advances");
+        CheckNear(step->positioning.x, pen, "render positioning differs from pen position");
+        CheckNear(step->advance_x, reference[i].metrics.horizontal.advance,
+                  "writing advance differs from rendered font advance");
+        CheckFont(std::memcmp(&step->glyph_metrics, &reference[i].metrics, sizeof(FontGlyphMetrics)) == 0,
+                  "writing and rendering selected different glyph metrics/fallback faces");
+        CheckFont(step->y == 0 && step->advance_y == 0 && step->positioning.y == 0,
+                  "horizontal writing changed its vertical pen");
+        CheckFont(FontWritingRefersRenderStepCharacter(&writing, &letter_output) == characters[i] && letter_output,
+                  "step character does not match the requested step");
+        const auto* letter = static_cast<const FontWritingLetterStep*>(letter_output);
+        CheckNear(letter->x, pen, "letter step position differs from render step");
+        CheckNear(letter->advance_x, step->advance_x, "letter step advance differs from render step");
+        CheckFont(letter->components.texts_count == 1 && letter->components.texts_index == 0 &&
+                  letter->components.glyphs_count == 1 && letter->components.glyphs_index == 0,
+                  "letter component indices must be relative to the current step");
+        CheckFont(!FontWritingRefersRenderStepCharacter(&writing, &letter_output) && !letter_output,
+                  "step character was consumed more than once");
+        const auto& glyph = reference[i].metrics;
+        const FontWritingExtent bounds {-glyph.horizontal.bearing_y,
+            -glyph.horizontal.bearing_y + glyph.height, pen + glyph.horizontal.bearing_x,
+            pen + glyph.horizontal.bearing_x + glyph.width};
+        if (i == 0) expected_extent = bounds;
+        else {
+            expected_extent.top = std::min(expected_extent.top, bounds.top);
+            expected_extent.bottom = std::max(expected_extent.bottom, bounds.bottom);
+            expected_extent.left = std::min(expected_extent.left, bounds.left);
+            expected_extent.right = std::max(expected_extent.right, bounds.right);
+        }
+        pen += glyph.horizontal.advance;
+        CheckFont(FontWritingGetRenderMetrics(&writing, &metrics) == 0, "writing metrics query failed");
+        CheckNear(metrics.advance_x, pen, "accumulated writing advance is incorrect");
+    }
+    CheckNear(metrics.extent.left, expected_extent.left, "writing left extent incorrect");
+    CheckNear(metrics.extent.right, expected_extent.right, "writing right extent incorrect");
+    CheckNear(metrics.extent.top, expected_extent.top, "writing top extent incorrect");
+    CheckNear(metrics.extent.bottom, expected_extent.bottom, "writing bottom extent incorrect");
+    const auto complete = metrics;
+    CheckFont(!FontWritingRefersRenderStep(&writing) && !FontWritingRefersRenderStep(&writing) &&
+              !FontWritingRefersRenderStepCharacter(&writing, &letter_output) && !letter_output,
+              "completed writing must stay exhausted");
+    CheckFont(FontWritingGetRenderMetrics(&writing, &metrics) == 0 &&
+              std::memcmp(&metrics, &complete, sizeof(metrics)) == 0,
+              "exhausted iteration changed completed metrics");
+
+    void* line = nullptr;
+    CheckFont(FontCreateWritingLine(nullptr, 0x10, nullptr, &line) == 0 && line &&
+              FontWritingLineWritesOrder(line, 0, &complete, mixed.handle) == 0 &&
+              FontWritingLineWritesOrder(line, 0, &complete, other.handle) == 0 &&
+              FontWritingLineGetRenderMetrics(line, &metrics) == 0, "writing-line ordering failed");
+    CheckNear(metrics.advance_x, complete.advance_x * 2, "writing line lost actual font advances");
+    const auto* line_step = FontWritingLineRefersRenderStep(line);
+    CheckFont(line_step && line_step->x == 0 && line_step->writing_orderer == mixed.handle,
+              "first writing-line step incorrect");
+    line_step = FontWritingLineRefersRenderStep(line);
+    CheckFont(line_step && line_step->writing_orderer == other.handle, "second writing-line step missing");
+    CheckNear(line_step->x, complete.advance_x, "writing-line pen is not based on real font metrics");
+    CheckFont(!FontWritingLineRefersRenderStep(line), "writing-line iteration does not terminate");
+    CheckFont(FontDestroyWritingLine(&line) == 0 && !line, "writing-line cleanup failed");
+
+    // Advancing without consuming a character must still progress, and reinitialization resets the pen.
+    CheckFont(FontWritingInit(&writing, mixed.handle, characters[1]) == 0, "could not restart writing at a character");
+    const auto* step = FontWritingRefersRenderStep(&writing);
+    CheckFont(step && step->glyph_code == 'i' && step->x == 0, "restart did not reset the writing pen");
+    step = FontWritingRefersRenderStep(&writing);
+    CheckFont(step && step->glyph_code == 0x4e2d &&
+              FontWritingRefersRenderStepCharacter(&writing, nullptr) == characters[2] &&
+              !FontWritingRefersRenderStepCharacter(&writing, nullptr),
+              "unconsumed previous character prevented progress or was returned twice");
+    CheckFont(FontWritingInit(&writing, empty.handle, nullptr) == 0 &&
+              !FontWritingRefersRenderStep(&writing) &&
+              FontWritingGetRenderMetrics(&writing, &metrics) == 0 && metrics.advance_x == 0,
+              "empty writing should have no step or advance");
+    CheckFont(!FontWritingRefersRenderStep(nullptr) &&
+              !FontWritingRefersRenderStepCharacter(nullptr, &letter_output) && !letter_output,
+              "null writing must have no step/character");
+    std::puts("FontUnicodeTests: mixed-face writing advances, inclusive ranges and step iteration passed");
 }
 
 std::filesystem::path InstalledCjkFont() {
@@ -150,6 +386,7 @@ void TestFontUnicodeFallback() {
                   "same fallback face kerning failed");
         std::puts("FontUnicodeTests: bundled Noto CJK fallback, CJK glyphs and metrics passed");
     }
+    TestFontWriting(opened.handle, bundled.handle);
 
     const auto cjk_path = InstalledCjkFont();
     if (!cjk_path.empty()) {
