@@ -91,7 +91,7 @@ void UpdateChecker::FetchUpdateInfo(const char* url, bool fallback, bool manual)
 	QNetworkRequest request(QUrl(QString::fromLatin1(url)));
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
 	                     QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setRawHeader("User-Agent", "Tohi-GT7-Launcher/1.0.0");
+	request.setRawHeader("User-Agent", "Tohi-GT7-Launcher/1.0.1");
 	request.setRawHeader("Accept", "application/vnd.github+json");
 	request.setTransferTimeout(15000);
 

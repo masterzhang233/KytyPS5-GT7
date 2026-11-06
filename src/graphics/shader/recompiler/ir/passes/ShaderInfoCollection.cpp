@@ -408,6 +408,42 @@ void CollectOutputs(const Program& program, ShaderStageInputInfo input_info, Sha
 
 } // namespace
 
+const char* UnsupportedPixelInputReferences(const Program& program,
+                                           ShaderStageInputInfo input_info) {
+	if (program.stage != ShaderType::Pixel || input_info.pixel == nullptr ||
+	    input_info.pixel->input_num > std::size(input_info.pixel->interpolator_settings)) {
+		return nullptr;
+	}
+	bool missing_input = false;
+	for (const auto* block: program.blocks) {
+		for (const auto& inst: *block) {
+			const auto op = inst.GetOpcode();
+			if (op != ValueOpcode::GetAttribute && op != ValueOpcode::GetInterpolationParameter) {
+				continue;
+			}
+			const size_t args = op == ValueOpcode::GetAttribute ? 2u : 3u;
+			if (inst.NumArgs() != args) {
+				return nullptr;
+			}
+			for (size_t index = 0; index < args; ++index) {
+				if (!inst.Arg(index).IsImmediate() || inst.Arg(index).GetType() != Type::U32) {
+					return nullptr;
+				}
+			}
+			if (inst.Arg(1).U32() >= 4u || (args == 3u && inst.Arg(2).U32() >= 3u)) {
+				return nullptr;
+			}
+			missing_input |= inst.Arg(0).U32() >= input_info.pixel->input_num;
+		}
+	}
+	if (!missing_input) {
+		return nullptr;
+	}
+	return input_info.pixel->input_num == 0
+	           ? "live pixel attribute reference has no runtime inputs (input_num=0)"
+	           : "live pixel attribute reference exceeds runtime input_num";
+}
+
 void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	if (!program.resource_tracking_complete || program.shader_info_complete) {
 		return Fail(!program.resource_tracking_complete ? "shader resources were not tracked"

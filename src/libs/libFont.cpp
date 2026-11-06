@@ -1,6 +1,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -13,10 +14,19 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -695,7 +705,7 @@ static std::vector<uint8_t> read_file_bytes(const std::filesystem::path& path) {
 	}
 
 	const auto size = file.tellg();
-	if (size <= 0) {
+	if (size <= 0 || size > (64 << 20)) {
 		return {};
 	}
 
@@ -709,10 +719,34 @@ static std::vector<uint8_t> read_file_bytes(const std::filesystem::path& path) {
 	return data;
 }
 
-static std::vector<std::filesystem::path> fallback_font_candidates(const char* file_name) {
+static std::vector<std::filesystem::path> runtime_font_candidates(const char* file_name) {
+	std::vector<std::filesystem::path> paths;
+#if defined(_WIN32)
+	std::array<wchar_t, 32768> executable {};
+	const auto size = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+	if (size != 0 && size < executable.size())
+		paths.push_back(std::filesystem::path(executable.data()).parent_path() / "fonts" / file_name);
+#endif
+	std::error_code ec;
+	const auto cwd = std::filesystem::current_path(ec);
+	if (!ec) paths.push_back(cwd / "fonts" / file_name);
+	return paths;
+}
+
+static std::filesystem::path system_font_directory() {
+#if defined(_WIN32)
+	std::array<wchar_t, 32768> windows {};
+	const auto size = GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
+	if (size != 0 && size < windows.size()) return std::filesystem::path(windows.data()) / "Fonts";
+#endif
+	return {};
+}
+
+static std::vector<std::filesystem::path> fallback_font_candidates(const char* file_name,
+                                                                 bool bold, bool italic) {
 	const auto rel =
 	    std::filesystem::path("3rdparty") / "tracy" / "profiler" / "src" / "font" / file_name;
-	std::vector<std::filesystem::path> paths;
+	auto paths = runtime_font_candidates(file_name);
 
 	auto source_root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
 	paths.push_back(source_root / rel);
@@ -724,12 +758,20 @@ static std::vector<std::filesystem::path> fallback_font_candidates(const char* f
 		paths.push_back(cwd / ".." / rel);
 		paths.push_back(cwd / ".." / ".." / rel);
 	}
+	// Read installed system fonts in place. They are never copied into release packages.
+	const auto system = system_font_directory();
+	if (!system.empty()) {
+		paths.push_back(system / (bold ? (italic ? "segoeuiz.ttf" : "segoeuib.ttf")
+		                                 : (italic ? "segoeuii.ttf" : "segoeui.ttf")));
+		paths.push_back(system / (bold ? (italic ? "arialbi.ttf" : "arialbd.ttf")
+		                                 : (italic ? "ariali.ttf" : "arial.ttf")));
+	}
 
 	return paths;
 }
 
 static std::vector<uint8_t> load_fallback_font_data(bool bold, bool italic) {
-	for (const auto& path: fallback_font_candidates(fallback_font_file_name(bold, italic))) {
+	for (const auto& path: fallback_font_candidates(fallback_font_file_name(bold, italic), bold, italic)) {
 		auto data = read_file_bytes(path);
 		if (!data.empty()) {
 			return data;
@@ -740,40 +782,47 @@ static std::vector<uint8_t> load_fallback_font_data(bool bold, bool italic) {
 }
 
 static const std::vector<uint8_t>& fallback_font_data(bool bold, bool italic) {
-	static const auto regular     = load_fallback_font_data(false, false);
-	static const auto bold_data   = load_fallback_font_data(true, false);
-	static const auto italic_data = load_fallback_font_data(false, true);
-	static const auto bold_italic = load_fallback_font_data(true, true);
-
-	if (bold && italic && !bold_italic.empty()) {
-		return bold_italic;
-	}
-	if (bold && !bold_data.empty()) {
-		return bold_data;
-	}
-	if (italic && !italic_data.empty()) {
-		return italic_data;
-	}
-	return regular;
+	static std::array<std::vector<uint8_t>, 4> data;
+	static std::array<std::once_flag, 4> once;
+	const auto style = unsigned(bold) + unsigned(italic) * 2;
+	std::call_once(once[style], [&] { data[style] = load_fallback_font_data(bold, italic); });
+	if (style != 0 && data[style].empty()) return fallback_font_data(false, false);
+	return data[style];
 }
 
-static bool ttf_data_has_supported_magic(const uint8_t* data, uint32_t size) {
-	if (data == nullptr || size < 12) {
-		return false;
+static int font_face_offset(const uint8_t* data, uint32_t size) {
+	if (data == nullptr || size < 12) return -1;
+	const auto u32 = [&](uint32_t offset) {
+		return uint32_t(data[offset]) << 24 | uint32_t(data[offset + 1]) << 16 |
+		       uint32_t(data[offset + 2]) << 8 | data[offset + 3];
+	};
+	uint32_t offset = 0;
+	if (u32(0) == 0x74746366u) { // TTC: face/table offsets are relative to the whole collection.
+		const auto faces = u32(8);
+		if (faces == 0 || faces > (size - 12) / 4) return -1;
+		offset = u32(12);
 	}
-
-	return (data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00) ||
-	       (data[0] == 't' && data[1] == 'r' && data[2] == 'u' && data[3] == 'e') ||
-	       (data[0] == 'O' && data[1] == 'T' && data[2] == 'T' && data[3] == 'O');
+	if (offset > size - 12 || offset > uint32_t(INT32_MAX)) return -1;
+	const auto magic = u32(offset);
+	if (magic != 0x00010000u && magic != 0x74727565u && magic != 0x4f54544fu) return -1;
+	const auto tables = uint32_t(data[offset + 4]) << 8 | data[offset + 5];
+	if (tables == 0 || tables > (size - offset - 12) / 16) return -1;
+	for (uint32_t i = 0; i < tables; ++i) {
+		const auto table = offset + 12 + i * 16;
+		const auto start = u32(table + 8), length = u32(table + 12);
+		if (start > size || length > size - start) return -1;
+	}
+	return static_cast<int>(offset);
 }
 
 static bool init_stb_font(FontState* font, const uint8_t* data, uint32_t size) {
-	if (font == nullptr || !ttf_data_has_supported_magic(data, size)) {
+	const auto offset = font_face_offset(data, size);
+	if (font == nullptr || offset < 0) {
 		return false;
 	}
 
 	stbtt_fontinfo info {};
-	if (stbtt_InitFont(&info, data, 0) == 0) {
+	if (stbtt_InitFont(&info, data, offset) == 0) {
 		return false;
 	}
 
@@ -814,32 +863,80 @@ static bool ensure_stb_font(FontState* font) {
 	return font->has_ttf;
 }
 
-static uint32_t stb_supported_codepoint(FontState* font, uint32_t code) {
-	if (font == nullptr || !ensure_stb_font(font)) {
-		return static_cast<uint32_t>('?');
+static const std::vector<std::filesystem::path>& unicode_font_candidates(bool bold) {
+	static std::array<std::vector<std::filesystem::path>, 2> paths;
+	static std::array<std::once_flag, 2> once;
+	std::call_once(once[bold], [&] {
+		auto& result = paths[bold];
+		// Optional user-supplied/open-licensed fonts are resolved beside the executable first.
+		for (const char* name : {"NotoSansSC-Regular.ttf", "NotoSansCJKsc-Regular.otf",
+		                         "NotoSansCJKjp-Regular.otf", "NotoSansCJKkr-Regular.otf"}) {
+			auto candidates = runtime_font_candidates(name);
+			result.insert(result.end(), candidates.begin(), candidates.end());
+		}
+		const auto system = system_font_directory();
+		if (!system.empty()) {
+			// Prefer the host font matching the guest locale when regional CJK glyphs overlap.
+			if (Config::GetConsoleLanguage() == 0) result.push_back(system / "msgothic.ttc");
+			if (Config::GetConsoleLanguage() == 9) result.push_back(system / (bold ? "malgunbd.ttf" : "malgun.ttf"));
+			if (bold) result.push_back(system / "msyhbd.ttc");
+			for (const char* name : {"msyh.ttc", "simhei.ttf", "simsun.ttc", "malgun.ttf",
+			                         "msgothic.ttc", "seguisym.ttf", "segoeui.ttf"})
+				result.push_back(system / name);
+		}
+	});
+	return paths[bold];
+}
+
+static const stbtt_fontinfo* unicode_fallback_face(uint32_t code, bool bold) {
+	struct Face { std::vector<uint8_t> data; stbtt_fontinfo info {}; };
+	static std::mutex mutex;
+	static std::map<std::filesystem::path, std::unique_ptr<Face>> faces;
+	std::lock_guard lock(mutex);
+	for (const auto& path : unicode_font_candidates(bold)) {
+		auto [entry, inserted] = faces.try_emplace(path);
+		if (inserted) {
+			auto face = std::make_unique<Face>();
+			face->data = read_file_bytes(path);
+			const auto offset = font_face_offset(face->data.data(), static_cast<uint32_t>(face->data.size()));
+			if (offset >= 0 && stbtt_InitFont(&face->info, face->data.data(), offset) != 0) {
+				std::printf("Font fallback: loaded %s\n", path.filename().string().c_str());
+				entry->second = std::move(face);
+			}
+		}
+		if (entry->second && stbtt_FindGlyphIndex(&entry->second->info, static_cast<int>(code)) != 0)
+			return &entry->second->info;
 	}
-	if (code > 0x10ffffu || stbtt_FindGlyphIndex(&font->font_info, static_cast<int>(code)) == 0) {
-		return static_cast<uint32_t>('?');
+	return nullptr;
+}
+
+static const stbtt_fontinfo* glyph_face(FontState* font, uint32_t& code) {
+	if (font == nullptr) return nullptr;
+	const auto* primary = ensure_stb_font(font) ? &font->font_info : nullptr;
+	if (code <= 0x10ffffu && !(code >= 0xd800u && code <= 0xdfffu)) {
+		if (primary && stbtt_FindGlyphIndex(primary, static_cast<int>(code)) != 0) return primary;
+		if (const auto* fallback = unicode_fallback_face(code, font_is_bold(font))) return fallback;
 	}
-	return code;
+	code = static_cast<uint32_t>('?');
+	return primary != nullptr ? primary : unicode_fallback_face(code, font_is_bold(font));
 }
 
 static bool get_stb_metrics(FontState* font, uint32_t code, FontGlyphMetrics* metrics) {
-	if (metrics == nullptr || !ensure_stb_font(font)) {
+	if (metrics == nullptr) {
 		return false;
 	}
-
-	code                = stb_supported_codepoint(font, code);
-	const float scale_x = stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_w);
-	const float scale_y = stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_h);
+	const auto* face = glyph_face(font, code);
+	if (face == nullptr) return false;
+	const float scale_x = stbtt_ScaleForMappingEmToPixels(face, font->scale_w);
+	const float scale_y = stbtt_ScaleForMappingEmToPixels(face, font->scale_h);
 
 	int advance = 0;
 	int x0      = 0;
 	int y0      = 0;
 	int x1      = 0;
 	int y1      = 0;
-	stbtt_GetCodepointHMetrics(&font->font_info, static_cast<int>(code), &advance, nullptr);
-	stbtt_GetCodepointBox(&font->font_info, static_cast<int>(code), &x0, &y0, &x1, &y1);
+	stbtt_GetCodepointHMetrics(face, static_cast<int>(code), &advance, nullptr);
+	stbtt_GetCodepointBox(face, static_cast<int>(code), &x0, &y0, &x1, &y1);
 
 	metrics->width                = static_cast<float>(x1 - x0) * scale_x;
 	metrics->height               = static_cast<float>(y1 - y0) * scale_y;
@@ -855,19 +952,19 @@ static bool get_stb_metrics(FontState* font, uint32_t code, FontGlyphMetrics* me
 
 static bool init_stb_image(std::vector<uint8_t>* image, FontTransImage* trans_image, uint32_t code,
                            FontState* font) {
-	if (image == nullptr || trans_image == nullptr || !ensure_stb_font(font)) {
+	if (image == nullptr || trans_image == nullptr) {
 		return false;
 	}
-
-	code                = stb_supported_codepoint(font, code);
-	const float scale_x = stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_w);
-	const float scale_y = stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_h);
+	const auto* face = glyph_face(font, code);
+	if (face == nullptr) return false;
+	const float scale_x = stbtt_ScaleForMappingEmToPixels(face, font->scale_w);
+	const float scale_y = stbtt_ScaleForMappingEmToPixels(face, font->scale_h);
 
 	int x0 = 0;
 	int y0 = 0;
 	int x1 = 0;
 	int y1 = 0;
-	stbtt_GetCodepointBitmapBox(&font->font_info, static_cast<int>(code), scale_x, scale_y, &x0, &y0,
+	stbtt_GetCodepointBitmapBox(face, static_cast<int>(code), scale_x, scale_y, &x0, &y0,
 	                            &x1, &y1);
 
 	const auto width  = static_cast<uint32_t>(std::clamp(x1 - x0, 0, FONT_GLYPH_MAX_DIM));
@@ -883,7 +980,7 @@ static bool init_stb_image(std::vector<uint8_t>* image, FontTransImage* trans_im
 		return true;
 	}
 
-	stbtt_MakeCodepointBitmap(&font->font_info, image->data(), static_cast<int>(width),
+	stbtt_MakeCodepointBitmap(face, image->data(), static_cast<int>(width),
 	                          static_cast<int>(height), static_cast<int>(width), scale_x, scale_y,
 	                          static_cast<int>(code));
 
@@ -2092,23 +2189,35 @@ int KYTY_SYSV_ABI FontGetKerning(FontHandle font_handle, uint32_t pre_code, uint
 	if (font == nullptr) {
 		return FONT_ERROR_INVALID_FONT_HANDLE;
 	}
-	if (pre_code == 0 || !ensure_stb_font(font)) {
+	if (pre_code == 0) {
 		return OK;
+	}
+	const stbtt_fontinfo* face = nullptr;
+	if (((pre_code | code) & 0x80000000u) != 0) {
+		// Raw glyph indices belong to the opened face, never to a fallback face.
+		if (!ensure_stb_font(font)) return OK;
+		face = &font->font_info;
+	} else {
+		auto left_code = pre_code, right_code = code;
+		face = glyph_face(font, left_code);
+		const auto* right_face = glyph_face(font, right_code);
+		if (face == nullptr || right_face == nullptr || left_code != pre_code || right_code != code)
+			return FONT_ERROR_NO_SUPPORT_CODE;
+		if (face != right_face) return OK; // No kerning across different physical fonts.
 	}
 	const auto glyph_index = [&](uint32_t value) {
 		if ((value & 0x80000000u) != 0) {
 			return static_cast<int>(value & 0xffffu);
 		}
-		return stbtt_FindGlyphIndex(&font->font_info, static_cast<int>(value));
+		return stbtt_FindGlyphIndex(face, static_cast<int>(value));
 	};
 	const int left  = glyph_index(pre_code);
 	const int right = glyph_index(code);
-	if (left <= 0 || left >= font->font_info.numGlyphs ||
-	    right <= 0 || right >= font->font_info.numGlyphs) {
+	if (left <= 0 || left >= face->numGlyphs || right <= 0 || right >= face->numGlyphs) {
 		return FONT_ERROR_NO_SUPPORT_CODE;
 	}
-	kerning->offset_x = static_cast<float>(stbtt_GetGlyphKernAdvance(&font->font_info, left, right)) *
-	                    stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_w);
+	kerning->offset_x = static_cast<float>(stbtt_GetGlyphKernAdvance(face, left, right)) *
+	                    stbtt_ScaleForMappingEmToPixels(face, font->scale_w);
 	LOGF("\t handle = 0x%016" PRIx64 ", pre_code = 0x%08" PRIx32 ", code = 0x%08" PRIx32
 	     ", offset_x = %f\n", reinterpret_cast<uint64_t>(font_handle), pre_code, code,
 	     static_cast<double>(kerning->offset_x));

@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string_view>
@@ -46,7 +47,7 @@ namespace {
 std::once_flag g_initialize;
 bool g_requested = false;
 std::atomic<bool> g_discontinuity {true};
-std::atomic<int64_t> g_last_generation_ms {0};
+StatusTracker g_status;
 
 int64_t ClockMilliseconds() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -195,7 +196,8 @@ bool Report(uint64_t count) { return count <= 4 || count % 300 == 0; }
 
 bool Ok(ffxReturnCode_t result, const char* operation) {
     if (result == FFX_API_RETURN_OK) return true;
-    LOGF("GT7 FSR FG: %s failed (%u); generation disabled\n", operation,
+    g_status.Set(StatusReason::RuntimeError);
+    std::printf("GT7 FSR FG: %s failed (%u); generation disabled\n", operation,
          static_cast<unsigned>(result));
     return false;
 }
@@ -205,6 +207,11 @@ void Message(uint32_t type, const wchar_t* message) {
     char text[2048] {};
     WideCharToMultiByte(CP_UTF8, 0, message, -1, text, sizeof(text) - 1, nullptr, nullptr);
     LOGF("GT7 FSR FG: runtime message type=%u: %s\n", type, text);
+    // Runtime callbacks may repeat an error every frame. Keep Silent-mode
+    // diagnostics bounded independently of the ordinary presentation summary.
+    static StatusTracker messages;
+    if (Log::IsSilent() && messages.TryReport(ClockMilliseconds()))
+        std::printf("GT7 FSR FG: runtime message type=%u: %s\n", type, text);
 }
 
 FfxApiResource ImageResource(const VulkanImage& image) {
@@ -646,14 +653,15 @@ void FinishOutputCaptureLocked(const char* reason, bool already_drained = false)
 ffxReturnCode_t Generate(ffxDispatchDescFrameGeneration* parameters, void* context) {
     auto& state = *static_cast<State*>(context);
     parameters->reset |= state.reset.exchange(false, std::memory_order_relaxed);
-    if (parameters->reset) g_last_generation_ms.store(0, std::memory_order_relaxed);
     // This integration is deliberately 2x. A different provider must not silently
     // turn it into multi-frame generation or consume more output slots.
     if (parameters->numGeneratedFrames == 0) {
+        g_status.Set(StatusReason::WaitingDispatch);
         if (OcclusionGuardRequested()) state.guard.InvalidateHistory();
         return FFX_API_RETURN_OK;
     }
     if (parameters->numGeneratedFrames != 1) {
+        g_status.Set(StatusReason::RuntimeError);
         state.callback_failed.store(true, std::memory_order_relaxed);
         LOGF("GT7 FSR FG: rejected generation count=%u (expected one)\n", parameters->numGeneratedFrames);
         EXIT("GT7 FSR FG: the runtime requested an unsupported generation count; stopping before recording.\n");
@@ -674,7 +682,7 @@ ffxReturnCode_t Generate(ffxDispatchDescFrameGeneration* parameters, void* conte
         const auto non_reset_count = !parameters->reset
             ? state.generated_non_reset.fetch_add(1, std::memory_order_relaxed) + 1
             : state.generated_non_reset.load(std::memory_order_relaxed);
-        if (!parameters->reset) g_last_generation_ms.store(ClockMilliseconds(), std::memory_order_relaxed);
+        g_status.Generated(parameters->reset, ClockMilliseconds());
         if (Report(count) || (!parameters->reset && Report(non_reset_count))) {
             LOGF("GT7 FSR FG: generation dispatch #%llu succeeded frame_id=%llu reset=%u non_reset_total=%llu\n",
                  static_cast<unsigned long long>(count),
@@ -738,7 +746,6 @@ bool Configure(bool enabled, uint64_t frame_id, vk::Rect2D region, const VulkanI
         LOGF("GT7 FSR FG: interpolation %s (2x; DLSS SR remains independent)\n", enabled ? "on" : "off");
         state.reset.store(true, std::memory_order_relaxed);
     }
-    if (!enabled) g_last_generation_ms.store(0, std::memory_order_relaxed);
     state.enabled = enabled;
     return true;
 }
@@ -802,21 +809,35 @@ void WaitForPresentsLocked() {
         EXIT("GT7 FSR FG: pending presentation work could not be drained; stopping before freeing its images.\n");
 }
 
-const char* InputProblem(const FrameInputs* inputs, vk::Rect2D region, const VulkanImage* hudless) {
-    if (inputs == nullptr || !inputs->valid) return "no matched frame inputs";
-    if (inputs->guest_frame == 0 || inputs->guest_frame == g_state.last_guest_frame) return "duplicate frame";
+const char* InputProblem(const FrameInputs* inputs, vk::Rect2D region, const VulkanImage* hudless,
+                         StatusReason& reason) {
+    reason = StatusReason::InvalidInput;
+    if (inputs == nullptr || !inputs->valid) {
+        reason = inputs != nullptr ? inputs->rejection_reason : StatusReason::WaitingInputs;
+        return StatusReasonText(reason);
+    }
+    if (inputs->guest_frame == 0 || inputs->guest_frame == g_state.last_guest_frame) {
+        reason = StatusReason::DuplicateFrame;
+        return "duplicate frame";
+    }
     if (!inputs->camera_valid || !std::isfinite(inputs->near_plane) || inputs->near_plane <= 0.0f ||
         !std::isfinite(inputs->fov_y) || inputs->fov_y <= 0.0f || inputs->fov_y >= 3.14159265f ||
-        (!inputs->depth_infinite && (!std::isfinite(inputs->far_plane) || inputs->far_plane <= inputs->near_plane)))
+        (!inputs->depth_infinite && (!std::isfinite(inputs->far_plane) || inputs->far_plane <= inputs->near_plane))) {
+        reason = StatusReason::CameraUnverified;
         return "unverified or invalid camera";
+    }
     if (!std::isfinite(inputs->jitter_x) || !std::isfinite(inputs->jitter_y)) return "invalid jitter";
     if (inputs->render_extent.width == 0 || inputs->render_extent.height == 0 ||
         !ValidImage(inputs->depth, inputs->render_extent, vk::Format::eR32Sfloat) ||
         !ValidImage(inputs->motion, inputs->render_extent, vk::Format::eR32G32Sfloat)) return "invalid depth/motion copy";
-    if (!inputs->hudless_valid || inputs->hudless_color.image == nullptr)
+    if (!inputs->hudless_valid || inputs->hudless_color.image == nullptr) {
+        reason = StatusReason::HudlessUnverified;
         return "no verified HUD-less scene for this frame";
-    if (hudless == nullptr || !ValidImage(*hudless, g_state.display, g_state.format))
+    }
+    if (hudless == nullptr || !ValidImage(*hudless, g_state.display, g_state.format)) {
+        reason = StatusReason::HudlessUnverified;
         return "HUD-less display image is missing or mismatched";
+    }
     // Frame interpolation copies this image into its previous-frame history
     // after sampling it. The Vulkan backend records vkCmdCopyImage directly.
     if (!(hudless->usage & vk::ImageUsageFlagBits::eTransferSrc))
@@ -833,12 +854,19 @@ const char* InputProblem(const FrameInputs* inputs, vk::Rect2D region, const Vul
 bool Requested() {
     std::call_once(g_initialize, [] {
         const auto* value = std::getenv("KYTY_GT7_FSR_FG");
-        if (value == nullptr || std::string_view(value) != "1") return;
+        if (value == nullptr || std::string_view(value) != "1") {
+            std::printf("GT7 FSR FG: disabled by configuration (KYTY_GT7_FSR_FG is not 1)\n");
+            std::fflush(stdout);
+            return;
+        }
+        g_status.Set(StatusReason::Loading);
 #ifdef GT7_HAS_FSR_RUNTIME
         wchar_t executable[32768] {};
         const DWORD length = GetModuleFileNameW(nullptr, executable, 32768);
         if (length == 0 || length >= 32768) {
-            LOGF("GT7 FSR FG: executable path unavailable; frame generation off\n");
+            g_status.Set(StatusReason::RuntimeMissing);
+            std::printf("GT7 FSR FG: executable path unavailable; frame generation off\n");
+            std::fflush(stdout);
             return;
         }
         const auto runtime = std::filesystem::path(executable).parent_path() / "amd_fidelityfx_vk.dll";
@@ -846,13 +874,17 @@ bool Requested() {
         state.module = LoadLibraryExW(runtime.c_str(), nullptr,
                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if (state.module == nullptr) {
-            LOGF("GT7 FSR FG: adjacent amd_fidelityfx_vk.dll unavailable (Windows error %lu); DLSS SR unaffected\n", GetLastError());
+            g_status.Set(StatusReason::RuntimeMissing);
+            std::printf("GT7 FSR FG: adjacent amd_fidelityfx_vk.dll unavailable (Windows error %lu); DLSS SR unaffected\n", GetLastError());
+            std::fflush(stdout);
             return;
         }
         ffxLoadFunctions(&state.api, state.module);
         if (state.api.CreateContext == nullptr || state.api.DestroyContext == nullptr || state.api.Configure == nullptr ||
             state.api.Query == nullptr || state.api.Dispatch == nullptr) {
-            LOGF("GT7 FSR FG: runtime missing FidelityFX entry points; frame generation off\n");
+            g_status.Set(StatusReason::RuntimeMissing);
+            std::printf("GT7 FSR FG: runtime missing FidelityFX entry points; frame generation off\n");
+            std::fflush(stdout);
             FreeLibrary(state.module);
             state.module = nullptr;
             return;
@@ -863,10 +895,13 @@ bool Requested() {
         debug.debugLevel = FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_ERRORS;
         (void)state.api.Configure(nullptr, &debug.header);
         g_requested = true;
-        LOGF("GT7 FSR FG: Vulkan runtime loaded, desktop 2x requested; verified HUD-less scene required\n");
+        g_status.Set(StatusReason::WaitingSwapchain);
+        std::printf("GT7 FSR FG: Vulkan runtime loaded, desktop 2x requested; verified HUD-less scene required. Counts below are dispatches, not displayed frames.\n");
 #else
-        LOGF("GT7 FSR FG: this build has no FidelityFX Vulkan runtime support; DLSS SR unaffected\n");
+        g_status.Set(StatusReason::BuildUnsupported);
+        std::printf("GT7 FSR FG: this build has no FidelityFX Vulkan runtime support; DLSS SR unaffected\n");
 #endif
+        std::fflush(stdout);
     });
     return g_requested;
 }
@@ -880,7 +915,11 @@ void OnQueues(GraphicContext& graphics) {
                   graphics.queue != graphics.gt7_fsr_present_queue &&
                   graphics.gt7_fsr_compute_queue != graphics.gt7_fsr_acquire_queue;
     state.graphics = state.ready ? &graphics : nullptr;
-    if (!state.ready) LOGF("GT7 FSR FG: dedicated queues unavailable; ordinary presentation retained\n");
+    if (!state.ready) {
+        g_status.Set(StatusReason::QueuesUnavailable);
+        std::printf("GT7 FSR FG: dedicated queues unavailable; ordinary presentation retained\n");
+        std::fflush(stdout);
+    }
 #else
     (void)graphics;
 #endif
@@ -895,9 +934,12 @@ bool OwnsSwapchain() {
 }
 
 bool IsGenerating() {
-    const int64_t last = g_last_generation_ms.load(std::memory_order_relaxed);
-    const int64_t age = ClockMilliseconds() - last;
-    return last != 0 && age >= 0 && age < 2000;
+    return GetStatus().reason == StatusReason::ActiveDispatch;
+}
+
+StatusSnapshot GetStatus() {
+    (void)Requested();
+    return g_status.Read(ClockMilliseconds());
 }
 
 void RequestOutputCapture() {
@@ -919,7 +961,9 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
     if (!state.ready || state.graphics != &graphics || OwnsSwapchain() || swapchain == nullptr)
         return vk::Result::eErrorInitializationFailed;
     if (info.imageColorSpace != vk::ColorSpaceKHR::eSrgbNonlinear) {
-        LOGF("GT7 FSR FG: initial implementation requires SDR presentation; ordinary swapchain retained\n");
+        g_status.Set(StatusReason::SwapchainUnsupported);
+        std::printf("GT7 FSR FG: initial implementation requires SDR presentation; ordinary swapchain retained\n");
+        std::fflush(stdout);
         return vk::Result::eErrorInitializationFailed;
     }
     Common::LockGuard queue_lock(graphics.queue_mutex);
@@ -941,6 +985,7 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
         if (state.swapchain_context != nullptr) (void)state.api.DestroyContext(&state.swapchain_context, nullptr);
         state.swapchain_context = nullptr;
         state.ready = false;
+        g_status.Set(StatusReason::RuntimeError);
         return vk::Result::eErrorInitializationFailed;
     }
     state.functions = {};
@@ -951,6 +996,9 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
         (void)state.api.DestroyContext(&state.swapchain_context, nullptr);
         state.swapchain_context = nullptr;
         state.ready = false;
+        g_status.Set(StatusReason::RuntimeError);
+        std::printf("GT7 FSR FG: replacement swapchain functions or handle unavailable; ordinary swapchain retained\n");
+        std::fflush(stdout);
         return vk::Result::eErrorInitializationFailed;
     }
     state.swapchain = handle;
@@ -959,7 +1007,6 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
     state.failed = false;
     state.callback_failed.store(false, std::memory_order_relaxed);
     state.reset.store(true, std::memory_order_relaxed);
-    g_last_generation_ms.store(0, std::memory_order_relaxed);
     state.last_guest_frame = 0;
     state.last_frame = {};
     state.capture_identity = {};
@@ -972,7 +1019,8 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
     state.guard_result = {};
     state.guard_applied = state.guard_skipped = state.guard_history_updates = 0;
     *swapchain = handle;
-    LOGF("GT7 FSR FG: replacement swapchain ready %ux%u, asynchronous interpolation=0\n", state.display.width, state.display.height);
+    g_status.Set(StatusReason::WaitingInputs);
+    std::printf("GT7 FSR FG: replacement swapchain ready %ux%u, asynchronous interpolation=0\n", state.display.width, state.display.height);
     return vk::Result::eSuccess;
 #else
     (void)graphics; (void)info; (void)swapchain;
@@ -1020,17 +1068,18 @@ void DestroySwapchain(GraphicContext& graphics, vk::SwapchainKHR swapchain) {
     }
     const uint64_t presents = state.functions.pOutGetLastPresentCountFFXAPI != nullptr
         ? state.functions.pOutGetLastPresentCountFFXAPI(static_cast<VkSwapchainKHR>(state.swapchain)) : 0;
-    LOGF("GT7 FSR FG: swapchain summary prepared=%llu generation_dispatches=%llu non_reset_dispatches=%llu rejected=%llu runtime_presents=%llu\n",
+    std::printf("GT7 FSR FG: swapchain summary prepared=%llu generation_dispatches=%llu non_reset_dispatches=%llu rejected=%llu sdk_present_submissions=%llu sdk_counter_available=%u (not measured display frames)\n",
          static_cast<unsigned long long>(state.prepared),
          static_cast<unsigned long long>(state.generated.load(std::memory_order_relaxed)),
          static_cast<unsigned long long>(state.generated_non_reset.load(std::memory_order_relaxed)),
-         static_cast<unsigned long long>(state.rejected), static_cast<unsigned long long>(presents));
+         static_cast<unsigned long long>(state.rejected), static_cast<unsigned long long>(presents),
+         state.functions.pOutGetLastPresentCountFFXAPI != nullptr ? 1u : 0u);
     (void)Ok(state.api.DestroyContext(&state.swapchain_context, nullptr), "destroy swapchain context");
     state.swapchain_context = nullptr;
     state.swapchain = nullptr;
     state.functions = {};
     state.enabled = false;
-    g_last_generation_ms.store(0, std::memory_order_relaxed);
+    g_status.Set(StatusReason::WaitingSwapchain);
     state.frame_id = 0;
     state.last_guest_frame = 0;
     state.capture_identity = {};
@@ -1082,7 +1131,19 @@ vk::Result QueuePresent(vk::Queue queue, const vk::PresentInfoKHR& present) {
 #ifdef GT7_HAS_FSR_RUNTIME
     if (!OwnsSwapchain()) return vk::Result::eErrorInitializationFailed;
     const VkPresentInfoKHR& native = present;
-    return static_cast<vk::Result>(g_state.functions.pOutQueuePresentKHR(static_cast<VkQueue>(queue), &native));
+    const auto result = static_cast<vk::Result>(g_state.functions.pOutQueuePresentKHR(static_cast<VkQueue>(queue), &native));
+    const auto now = ClockMilliseconds();
+    if (g_status.TryReport(now)) {
+        const auto status = g_status.Read(now);
+        std::printf("GT7 FSR FG status: %s; non_reset_dispatches=%llu prepared=%llu rejected=%llu present_result=%d\n",
+            StatusReasonText(status.reason), static_cast<unsigned long long>(status.generated_dispatches),
+            static_cast<unsigned long long>(g_state.prepared), static_cast<unsigned long long>(g_state.rejected),
+            static_cast<int>(result));
+        // A five-second summary is useful while redirected into a launcher log.
+        // No per-frame flush is introduced.
+        std::fflush(stdout);
+    }
+    return result;
 #else
     (void)queue; (void)present;
     return vk::Result::eErrorInitializationFailed;
@@ -1103,18 +1164,20 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
         (state.output_capture.count == OutputCapturePairs || state.output_capture.error != nullptr))
         FinishOutputCaptureLocked("four non-reset pairs recorded");
     const uint64_t frame_id = ++state.frame_id;
-    const char* problem = InputProblem(inputs, region, hudless);
+    StatusReason reason;
+    const char* problem = InputProblem(inputs, region, hudless, reason);
     if (state.callback_failed.load(std::memory_order_relaxed)) state.failed = true;
     if (problem != nullptr || state.failed) {
+        g_status.Set(state.failed ? StatusReason::RuntimeError : reason);
         if (state.output_capture.active) ++state.output_capture.skipped_prepare;
         state.reset.store(true, std::memory_order_relaxed);
-        g_last_generation_ms.store(0, std::memory_order_relaxed);
         if (problem != nullptr && Report(++state.rejected))
             LOGF("GT7 FSR FG: original frame retained #%llu: %s\n", static_cast<unsigned long long>(state.rejected), problem);
         (void)Configure(false, frame_id, region);
         return;
     }
     if (!EnsureGeneration(*inputs)) {
+        g_status.Set(state.failed ? StatusReason::RuntimeError : StatusReason::InvalidInput);
         if (state.output_capture.active) ++state.output_capture.skipped_prepare;
         state.reset.store(true, std::memory_order_relaxed);
         (void)Configure(false, frame_id, region);
@@ -1127,7 +1190,7 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
     if (inputs->reset || discontinuity ||
         state.last_guest_frame == 0 || inputs->guest_frame != state.last_guest_frame + 1) {
         state.reset.store(true, std::memory_order_relaxed);
-        g_last_generation_ms.store(0, std::memory_order_relaxed);
+        g_status.Set(StatusReason::HistoryReset);
     }
     state.last_guest_frame = inputs->guest_frame;
     const auto now = std::chrono::steady_clock::now();
@@ -1137,7 +1200,10 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
             : std::chrono::duration<float, std::milli>(now - state.last_frame).count();
     }
     state.last_frame = now;
-    if (delta > 100.0f) state.reset.store(true, std::memory_order_relaxed);
+    if (delta > 100.0f) {
+        state.reset.store(true, std::memory_order_relaxed);
+        g_status.Set(StatusReason::HistoryReset);
+    }
     delta = std::clamp(delta, 1.0f, 100.0f);
     if (!Configure(true, frame_id, region, hudless)) return;
 
@@ -1219,7 +1285,9 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
 
 void NoteDroppedFrame() {
     g_discontinuity.store(true, std::memory_order_relaxed);
-    g_last_generation_ms.store(0, std::memory_order_relaxed);
+    // Dropped frames can be reported while FG is disabled or failed to load.
+    // Preserve the more useful disabled/initialization error state.
+    g_status.Dropped();
 }
 
 } // namespace Libs::Graphics::Gt7FrameGen

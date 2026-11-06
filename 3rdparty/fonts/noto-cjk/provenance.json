@@ -1,0 +1,20 @@
+{
+  "project": "Noto CJK",
+  "repository": "https://github.com/notofonts/noto-cjk",
+  "commit": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+  "source_path": "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+  "source_url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+  "file": "NotoSansCJKsc-Regular.otf",
+  "bytes": 16437364,
+  "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+  "git_blob_sha1": "dc15562470b4f842321894787a0d066879ccff8b",
+  "family": "Noto Sans CJK SC",
+  "style": "Regular",
+  "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+  "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+  "modified": false,
+  "license": "OFL-1.1",
+  "license_source_path": "Sans/LICENSE",
+  "license_file": "OFL.txt",
+  "license_sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+}

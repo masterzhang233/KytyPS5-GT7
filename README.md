@@ -16,14 +16,35 @@ and experimental Vulkan FSR 3.1 frame generation. The original emulator is based
 **[Downloads and update notes](https://github.com/masterzhang233/Tohi-GT7/releases)** ·
 **[Report a Tohi-GT7 issue](https://github.com/masterzhang233/Tohi-GT7/issues)**
 
-**[Tohi-GT7 1.0.0 — 2026-11-05](https://github.com/masterzhang233/Tohi-GT7/releases/tag/v1.0.0):** the launcher provides one **DLSS** checkbox, enabled by
+**[Current release: Tohi-GT7 1.0.1](https://github.com/masterzhang233/Tohi-GT7/releases/tag/v1.0.1).**
+The launcher provides one **DLSS** checkbox, enabled by
 default. For desktop GT7 it selects the tested **1920×1080 → 2560×1440** configuration
 (Quality hint, transformer preset K), together with **FSR 3.1.4 2× frame generation**
 and the wheel/occlusion ghosting correction. There is no adjustable DLSS quality menu.
 DLSS requires a compatible NVIDIA RTX GPU; the live acceptance run used an RTX 3080.
 This is a fixed 1080p input, not the standard DLSS Quality input resolution at 1440p.
 
-The latest playtest reported substantially reduced wheel ghosting without a new visible
+The 1.0.1 update recognizes equivalent camera-position calculations in vertex shaders,
+addressing the narrow producer whitelist that kept frame generation in standby outside
+the original BB test track. Recognition follows the actual calculation, without a per-track
+allowlist. It retains depth/motion/jitter and HUD checks. The update also adds a desktop
+entry script, identifies the title's FPS as game FPS, and keeps bounded diagnostics during
+ordinary play. The changed shader-cache format requires recompilation on first use.
+
+Version 1.0.1 also corrects camera-constant validation and composition of multiple
+verified scene effects observed in Monza and Nürburgring cockpit/exterior views. A
+missing pixel-input variant is skipped instead of terminating the emulator while driving.
+Six automated regression suites passed; final in-game acceptance of the latest changes
+across these tracks and views was not completed. Unsupported effects still fall back to
+ordinary presentation, so this release does not guarantee uninterrupted frame generation.
+
+Unicode font fallback has also been added for missing CJK characters. The package includes the
+unmodified, OFL-licensed Noto Sans CJK SC Regular font, so Simplified Chinese display
+does not require Windows Chinese optional fonts. Existing game glyphs retain their
+original font; this repairs character display and does not alter game translations.
+The font's [license and provenance](3rdparty/fonts/noto-cjk/NOTICE.md) are included.
+
+The earlier BB-track frame-generation playtest for 1.0.0 reported substantially reduced wheel ghosting without a new visible
 artifact. Four complete capture pairs confirmed that frame generation and its correction
 ran. Save progress is retained between normal sessions. These checks do not establish a
 display FPS benchmark or compatibility with every camera, car and track. See the
@@ -34,8 +55,8 @@ The project and downloads are now named **Tohi-GT7**. Executable names and exist
 and configuration locations are kept compatible with previous builds.
 
 > [!NOTE]
-> Start the Windows package through `launcher.exe` and follow the
-> [Tohi-GT7 1.0.0 release notes](docs/RELEASE-1.0.0.zh-CN.md).
+> Start the Windows package through `launcher.exe` or `Start-GT7-Desktop.cmd` and follow the
+> [Tohi-GT7 1.0.1 release notes](docs/RELEASE-1.0.1.zh-CN.md).
 > [GT7 documentation](docs/GT7.md) also retains the upstream settings and change log
 > as historical context; they do not replace the current default DLSS preset.
 > In the game, use performance (frame rate) mode. Ray tracing (RT) is not recommended.

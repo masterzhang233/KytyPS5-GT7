@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/presentation/window/gt7FrameGenStatus.h"
 
 #include <cstdint>
 
@@ -37,6 +38,7 @@ struct FrameInputs {
     bool reset = true;
     bool valid = false;
     bool hudless_valid = false;
+    StatusReason rejection_reason = StatusReason::WaitingInputs;
 };
 
 // Opt-in KYTY_GT7_FSR_FG=1. Requested loads only the adjacent AMD runtime,
@@ -47,6 +49,9 @@ void OnQueues(GraphicContext& graphics);
 // True only after a recent successful, non-reset interpolation dispatch.
 // Safe from the window/status thread; this does not alter the guest FPS count.
 [[nodiscard]] bool IsGenerating();
+// Snapshot of atomics only; also reports initialization failures when Requested
+// returns false. Active/generated refer to dispatches, not measured display FPS.
+[[nodiscard]] StatusSnapshot GetStatus();
 // F10 diagnostic, opt-in KYTY_GT7_FSR_FG_CAPTURE_OUTPUTS=1. Thread-safe and
 // nonblocking: request four non-reset presentColor/interpolation-output pairs,
 // with same-frame HUD-less display color and private depth/motion SDK inputs.

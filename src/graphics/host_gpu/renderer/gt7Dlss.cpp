@@ -18,14 +18,20 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Libs::Graphics {
 namespace {
@@ -86,11 +92,54 @@ struct ComputePass {
 
 struct FrameGenerationCamera {
     ImageId depth_id {}, motion_id {};
-    Gt7FrameGenCamera::Matrix view_projection {}, view {}, projection {}, unjittered {};
+    Gt7FrameGenCamera::Matrix view_projection {}, view {}, projection {};
     Gt7FrameGenCamera::Parameters parameters {};
     bool valid = false, rejected = false;
     const char* reject_reason = nullptr;
 };
+
+// Recording-thread diagnostics only. Keep each frame's last meaningful HUD
+// transition without retaining caller-owned strings or allocating per draw.
+struct HudlessDiagnostic {
+    const char* stage = "no tone-map candidate";
+    std::array<char, 192> reason {};
+    uint32_t tonemap_calls = 0, capture_attempts = 0;
+    bool captured = false;
+    uint64_t writer_vs = 0, writer_ps = 0;
+    uint32_t writer_mask = 0;
+    bool writer_overlay = false;
+    size_t writer_targets = 0;
+
+    void Note(const char* where, const char* why) {
+        stage = where; // All stage labels below are string literals.
+        std::snprintf(reason.data(), reason.size(), "%s", why ? why : "none");
+    }
+};
+
+// The first operation that invalidates a scene is more useful than a later
+// cascade of cancellations. Owned text and fixed storage keep this bounded;
+// this state has the same recording-thread lifetime as the scene itself.
+struct SceneDiagnostic {
+    const char* stage = "none";
+    std::array<char, 192> reason {};
+    ImageId depth_id {}, motion_id {};
+    uint64_t writer_vs = 0;
+    uint64_t writer_ps = 0;
+    bool scene_writer = false;
+    std::array<char, 2048> writer_details {};
+
+    void NoteFirst(const char* where, const char* why, ImageId depth = {},
+                   ImageId motion = {}, uint64_t vertex_shader = 0) {
+        if (reason[0]) return;
+        stage = where; // All stage labels are string literals.
+        std::snprintf(reason.data(), reason.size(), "%s", why ? why : "none");
+        depth_id = depth;
+        motion_id = motion;
+        writer_vs = vertex_shader;
+    }
+};
+
+#include "gt7FrameGenCameraProbe.inl"
 
 enum CameraObservation : size_t {
     CameraCalls, CameraDepth, CameraMotion, CameraShape, CameraLate, CameraLimit,
@@ -224,11 +273,15 @@ struct Gt7Dlss::Impl {
     ImageId scene_id {};
     GuestRange scene_range {};
     uint64_t evaluations = 0, composites = 0, cancellations = 0, rejected = 0;
-    std::array<uint64_t, 3> composites_by_effect_count {};
+    // Diagnostic buckets 0, 1, 2, 3+: the number of verified source-over draws
+    // is not a validity condition for the premultiplied effect layer.
+    std::array<uint64_t, 4> composites_by_effect_count {};
+    std::chrono::steady_clock::time_point next_effect_report {};
     uint64_t boundary_evaluations = 0;
     uint64_t boundary_composites = 0, fg_frame = 1, fg_copied = 0, fg_snapshots = 0, fg_rejected = 0;
     uint32_t fg_temporal_attempts = 0;
     std::vector<FrameGenerationCamera> fg_cameras;
+    CameraProbeState fg_camera_probe;
     std::array<uint32_t, CameraObservationCount> fg_camera_observations {};
     std::vector<std::array<uint64_t, 2>> fg_draw_signatures;
     uint32_t fg_candidate_draws = 0;
@@ -241,12 +294,17 @@ struct Gt7Dlss::Impl {
     VulkanImage fg_hudless {};
     std::vector<uint8_t> fg_dcc_snapshot;
     bool fg_hudless_valid = false;
+    HudlessDiagnostic fg_hudless_diagnostic;
+    SceneDiagnostic fg_scene_diagnostic;
     uint32_t fg_tonemap_attempts = 0, fg_ui_draws = 0;
     Gt7FrameGenCamera::Parameters fg_camera {};
     float fg_jitter_x = 0.0f, fg_jitter_y = 0.0f, fg_frame_time_ms = 0.0f;
     bool fg_camera_valid = false, fg_reset = true, fg_input_ambiguous = false;
     bool active = false, reset = true, disabled = false, initialized = false;
     std::chrono::steady_clock::time_point last_time {};
+    std::chrono::steady_clock::time_point fg_next_camera_report {};
+    std::chrono::steady_clock::time_point fg_next_hudless_report {};
+    std::chrono::steady_clock::time_point fg_next_scene_report {};
 
     ~Impl() {
         // RenderContext owns this object and has already finished its scheduler.
@@ -329,6 +387,7 @@ struct Gt7Dlss::Impl {
     }
 
     bool Reject(const char* reason) {
+        fg_scene_diagnostic.NoteFirst("temporal pass rejected", reason);
         reset = true;
         fg_camera_valid = false;
         fg_input_ambiguous = true;
@@ -356,9 +415,14 @@ bool Gt7Dlss::MatchesWatchedWriteRange(GuestRange range) const {
 }
 void Gt7Dlss::CancelFrame(const char* reason, bool invalidate_history) {
     auto& s = *m_impl;
+    // Calls before the first temporal pass are often no-ops. Do not let those
+    // hide the first cancellation which actually discarded scene state.
+    if (s.active || s.fg_hudless_valid || invalidate_history)
+        s.fg_scene_diagnostic.NoteFirst("scene cancelled", reason);
     // A clear, unbounded writer or later unverified operation must also discard
     // the already captured display-color scene, even after SR has composited.
     if (s.fg_hudless_valid) {
+        s.fg_hudless_diagnostic.Note("captured scene invalidated", reason);
         bool first_for_reason = false;
         // Title-scene rejections must not hide the first new race failure.
         // Bound both storage and logging; reason strings are copied once.
@@ -389,6 +453,22 @@ void Gt7Dlss::CancelFrame(const char* reason, bool invalidate_history) {
         static_cast<unsigned long long>(s.evaluations), static_cast<unsigned long long>(s.composites));
 }
 
+void Gt7Dlss::CancelSceneWriterFrame(const char* reason, uint64_t vertex_shader,
+                                    uint64_t pixel_shader, const char* details) {
+    auto& s = *m_impl;
+    auto& diagnostic = s.fg_scene_diagnostic;
+    // The caller is the failed effect-writer branch. Keep the same first-cause
+    // rule as CancelFrame; never attribute a prior rejection to this later draw.
+    if (s.active && !diagnostic.reason[0]) {
+        diagnostic.NoteFirst("scene writer cancelled", reason, {}, {}, vertex_shader);
+        diagnostic.writer_ps = pixel_shader;
+        diagnostic.scene_writer = true;
+        std::snprintf(diagnostic.writer_details.data(), diagnostic.writer_details.size(),
+                      "%s", details ? details : "details unavailable");
+    }
+    CancelFrame(reason);
+}
+
 void Gt7Dlss::FrameBoundary() {
     auto& s = *m_impl;
     // Retiring a completed frame is not an unverified writer rejection.
@@ -402,6 +482,7 @@ void Gt7Dlss::FrameBoundary() {
     s.fg_camera_valid = false;
     s.fg_input_ambiguous = false;
     s.fg_cameras.clear();
+    s.fg_camera_probe.pending.clear();
     s.fg_camera_observations.fill(0);
     s.fg_candidate_draws = 0;
     s.fg_scaled_scene_id = {};
@@ -410,6 +491,8 @@ void Gt7Dlss::FrameBoundary() {
     s.fg_output_image = nullptr;
     s.fg_hudless_valid = false;
     s.fg_tonemap_attempts = s.fg_ui_draws = 0;
+    s.fg_hudless_diagnostic = {};
+    s.fg_scene_diagnostic = {};
     ++s.fg_frame;
 }
 
@@ -550,6 +633,9 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
     s.scene_id = colors[1].image_id;
     s.scene_range = colors[1].desc.info.data;
     ++s.evaluations;
+    if (CameraProbeEnabled())
+        WriteCameraProbes(s.fg_camera_probe, pixel.images[0].image_id, pixel.images[1].image_id,
+                         s.fg_frame, constants[20], constants[21]);
     if (s.graphics.gt7_fsr_present_queue && Gt7FrameGen::Requested()) {
         // Require camera and temporal resources from this guest frame, including
         // the precise projection jitter used by the producer and resolve.
@@ -564,6 +650,22 @@ bool Gt7Dlss::BeginTaa(CommandBuffer& buffer, const PreparedBindings& pixel,
             }
         }
         const bool failed_camera = !s.fg_camera_valid && s.fg_camera_observations[CameraCalls] != 0;
+        if (now >= s.fg_next_camera_report) {
+            s.fg_next_camera_report = now + std::chrono::seconds(5);
+            const char* reason = s.fg_camera_valid ? "none" :
+                s.fg_camera_observations[CameraCalls] == 0 ? "no proved producer with compatible raster" :
+                "no producer for current TAA depth/motion pair";
+            if (!s.fg_camera_valid) for (const auto& camera : s.fg_cameras) {
+                if (camera.depth_id == pixel.images[0].image_id && camera.motion_id == pixel.images[1].image_id) {
+                    reason = camera.reject_reason ? camera.reject_reason : "projection jitter mismatch";
+                    break;
+                }
+            }
+            std::printf("GT7 FSR FG camera: frame=%llu candidate_draws=%u observed=%u accepted=%u matched=%u reason=%s\n",
+                static_cast<unsigned long long>(s.fg_frame), s.fg_candidate_draws,
+                s.fg_camera_observations[CameraCalls], s.fg_camera_observations[CameraAccepted],
+                s.fg_camera_valid ? 1u : 0u, reason);
+        }
         const bool report_failure = failed_camera &&
             (++s.fg_camera_match_failures <= 8 || s.fg_camera_match_failures % 300 == 0);
         if (report_failure)

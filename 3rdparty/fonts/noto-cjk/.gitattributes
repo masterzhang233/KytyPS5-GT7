@@ -1,0 +1,3 @@
+# Preserve the pinned upstream font and license byte for byte, including on Windows.
+NotoSansCJKsc-Regular.otf -text
+OFL.txt -text

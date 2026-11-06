@@ -5759,7 +5759,8 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		const bool blur = (ps_hash == 0xcdbe808cb64e4b11ULL || ps_hash == 0xa50c564bf8216bebULL ||
 		                   ps_hash == 0x120055aad94796a9ULL) && vs_hash == 0xf13bd2584bf580c0ULL;
 		const bool overlay = ps_hash == 0x939a0b13ee9531c5ULL && vs_hash == 0xdf39fc07bb648d84ULL;
-		if ((!blur && !overlay) || programs.pixel.hash != ps_hash ||
+		const bool geometric_effect = ps_hash == 0x9f53b507cd2cc216ULL && vs_hash == 0xd7debaa5ad604aa8ULL;
+		if ((!blur && !overlay && !geometric_effect) || programs.pixel.hash != ps_hash ||
 		    programs.vertex[0].hash != vs_hash) {
 			return reject("unverified shader pair");
 		}
@@ -5792,6 +5793,11 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		    depth.depth_write_enable || depth.depth_clear_enable || depth.depth_load_clear_enable ||
 		    depth.stencil_clear_enable || depth.stencil_test_enable || depth.depth_bounds_test_enable ||
 		    (blur && depth.image_id) ||
+		    (geometric_effect && (depth.image_id || depth.depth_test_enable ||
+		                          vertex_info[0].stage.program->stage != ShaderType::Vertex ||
+		                          topology != vk::PrimitiveTopology::eTriangleList || primitive_restart_enable ||
+		                          !ps.stage.program->info.images.empty() || ps.ps_pixel_kill_enable ||
+		                          ps.ps_sample_shading)) ||
 		    (overlay && (!depth.image_id || !depth.depth_test_enable ||
 		                 depth.depth_compare_op != vk::CompareOp::eGreaterOrEqual ||
 		                 depth.desc.info.samples != 1 || depth.desc.view_info.layer_count != 1))) {
@@ -5801,14 +5807,31 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		const auto& bc = ctx.GetBlendControl(0);
 		using Factor = Prospero::BlendFactor;
 		const auto add = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
-		if (!bc.enable || ctx.GetRenderTarget(0).info.blend_bypass || !bc.separate_alpha_blend ||
-		    bc.color_srcblend != static_cast<uint8_t>(Factor::kSrcAlpha) ||
-		    bc.color_destblend != static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) ||
-		    bc.alpha_srcblend != static_cast<uint8_t>(Factor::kOne) ||
-		    bc.alpha_destblend != static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) ||
-		    bc.color_comb_fcn != add || bc.alpha_comb_fcn != add ||
+		const bool known_source_over = bc.separate_alpha_blend &&
+		    bc.color_srcblend == static_cast<uint8_t>(Factor::kSrcAlpha) &&
+		    bc.color_destblend == static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) &&
+		    bc.alpha_srcblend == static_cast<uint8_t>(Factor::kOne) &&
+		    bc.alpha_destblend == static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) &&
+		    bc.color_comb_fcn == add && bc.alpha_comb_fcn == add;
+		// This exact PS exports RGBA without reading the destination; the caller
+		// checks the VS's sampled images and all buffers against that destination.
+		// B10G11R11 stores no alpha. For this pair the guest alpha equation is
+		// irrelevant, but its RGB source factor and destination attenuation are not.
+		const bool geometric_blend = bc.color_comb_fcn == add &&
+		    (bc.color_srcblend == static_cast<uint8_t>(Factor::kSrcAlpha) ||
+		     bc.color_srcblend == static_cast<uint8_t>(Factor::kOne) ||
+		     bc.color_srcblend == static_cast<uint8_t>(Factor::kZero)) &&
+		    (bc.color_destblend == static_cast<uint8_t>(Factor::kOneMinusSrcAlpha) ||
+		     bc.color_destblend == static_cast<uint8_t>(Factor::kOne));
+		if (!bc.enable || ctx.GetRenderTarget(0).info.blend_bypass ||
+		    !(geometric_effect ? geometric_blend : known_source_over) ||
 		    render_target_mask_slot(ctx.GetRenderTargetMask(), 0) != 0xf ||
-		    ctx.GetShaderRegisters().AlphaToMask()) {
+		    ctx.GetShaderRegisters().AlphaToMask() ||
+		    (geometric_effect && (ctx.GetColorControl().mode != 1 || ctx.GetColorControl().op != 0xcc ||
+		                          ctx.GetAaConfig().msaa_num_samples != 0 ||
+		                          ctx.GetAaConfig().msaa_exposed_samples != 0 ||
+		                          (ctx.GetAaMask(0) & 0x00010001u) != 0x00010001u ||
+		                          (ctx.GetAaMask(1) & 0x00010001u) != 0x00010001u))) {
 			return reject("unverified blend, channel mask or coverage state");
 		}
 	}
@@ -5914,19 +5937,23 @@ PipelineCache::Pipeline* PipelineCache::TryGetGraphicsPipeline(
 		}
 	}
 	if (premultiplied_effect_layer) {
-		// Transparent clear + straight-source RGB over stores P = a*C + (1-a)*Pprev,
-		// A = a + (1-a)*Aprev. The later composite is P + (1-A)*base, never P*A.
+		// Preserve the verified guest RGB equation P' = srcFactor*C + dstFactor*P.
+		// Only destination attenuation determines A: source-over accumulates
+		// A' = a + (1-a)*A; additive leaves A unchanged. Composite remains
+		// P + (1-A)*base, including mixed additive/source-over draw sequences.
 		// The rendering format is part of GraphicsPipelineKey, so the guest B10G11R11
 		// pipeline is neither reused for this attachment nor modified by this request.
+		const auto& bc = ctx.GetBlendControl(0);
+		const bool attenuates = bc.color_destblend == static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha);
 		rendering.color_formats[0] = vk::Format::eR16G16B16A16Sfloat;
 		static_params.color_mask[0] = 0xf;
 		static_params.blend_enable[0] = true;
-		static_params.color_srcblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kSrcAlpha);
-		static_params.color_destblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha);
+		static_params.color_srcblend[0] = bc.color_srcblend;
+		static_params.color_destblend[0] = bc.color_destblend;
 		static_params.color_comb_fcn[0] = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
 		static_params.separate_alpha_blend[0] = true;
-		static_params.alpha_srcblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOne);
-		static_params.alpha_destblend[0] = static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha);
+		static_params.alpha_srcblend[0] = static_cast<uint8_t>(attenuates ? Prospero::BlendFactor::kOne : Prospero::BlendFactor::kZero);
+		static_params.alpha_destblend[0] = static_cast<uint8_t>(attenuates ? Prospero::BlendFactor::kOneMinusSrcAlpha : Prospero::BlendFactor::kOne);
 		static_params.alpha_comb_fcn[0] = static_cast<uint8_t>(Prospero::BlendOp::kAdd);
 	}
 	const bool with_depth =

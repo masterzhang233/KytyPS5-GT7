@@ -1,5 +1,7 @@
 #pragma once
 
+#include "graphics/guest_gpu/viewportTransform.h"
+
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -18,20 +20,51 @@ struct Parameters {
     std::array<float, 3> position {}, right {}, up {}, forward {};
 };
 
+// The camera decoder describes projection z/w. The depth image supplied to FSR
+// must retain that mapping after position conversion and rasterization. XY
+// viewport/scissor coverage and shader position provenance are checked by the
+// caller; neither is implied by these fields. Missing state fails closed.
+struct RasterState {
+    float z_scale = 0.0f, z_offset = 0.0f;
+    uint32_t position_format = 0;
+    bool dx_clip_space = false;
+    bool min_z_clip_enabled = false, max_z_clip_enabled = false;
+    bool poly_offset_front = false, poly_offset_back = false;
+    bool clip_space_conversion = false;
+    bool indexed_viewport = false, layer_output = false;
+    // Nonzero only when the bound attachments prove the pipeline's layer-limit
+    // specialization. With limit 1 every emitted layer is mapped to zero.
+    uint32_t layer_limit = 0;
+};
+
+constexpr bool CompatibleRaster(const RasterState& raster) {
+    // Exact comparisons also reject NaN and infinity. Accept only the captured
+    // zero-to-one clip convention with unmodified homogeneous coordinates.
+    return raster.z_scale == 1.0f && raster.z_offset == 0.0f &&
+           raster.position_format == ViewportTransform::IncomingW &&
+           raster.dx_clip_space && raster.min_z_clip_enabled && raster.max_z_clip_enabled &&
+           !raster.poly_offset_front && !raster.poly_offset_back &&
+           !raster.clip_space_conversion && !raster.indexed_viewport &&
+           (!raster.layer_output || raster.layer_limit == 1);
+}
+
 // Observed in the ordinary GT7 motion producer (VS 48a3c58d37f8582f):
 // s[10:11]+80 is its current view-projection; +144 is view; +208 is projection.
-// +976 is the corresponding unjittered projection. Validate all four matrices,
-// rather than treating arbitrary CPU data as camera parameters. This first
-// implementation accepts the captured finite reverse-Z perspective layout only.
+// Only the VP load is established by the shader contract. The adjacent view
+// and projection are accepted as a decomposition only when their product
+// agrees with that actual VP and the view is rigid/right-handed. A separate
+// block at +976 is not part of the shader proof and must not decide acceptance.
+// The caller additionally matches this projection's exact jitter to the TAA
+// using the same depth/motion images in the same guest frame.
 inline bool Decode(const Matrix& view_projection, const Matrix& view,
-                   const Matrix& projection, const Matrix& unjittered,
+                   const Matrix& projection,
                    uint32_t width, uint32_t height, Parameters& output,
                    const char** failure = nullptr) {
     output = {};
     if (failure) *failure = nullptr;
     const auto reject = [&](const char* reason) { if (failure) *failure = reason; return false; };
     if (!width || !height) return reject("zero extent");
-    for (const auto* matrix : {&view_projection, &view, &projection, &unjittered})
+    for (const auto* matrix : {&view_projection, &view, &projection})
         for (float x : *matrix) if (!std::isfinite(x)) return reject("nonfinite matrix");
     for (uint32_t i : {1u, 2u, 3u, 4u, 6u, 7u, 12u, 13u, 15u})
         if (projection[i] != 0.0f) return reject("perspective zero pattern");
@@ -39,8 +72,6 @@ inline bool Decode(const Matrix& view_projection, const Matrix& view,
         projection[10] <= 0.0f || projection[14] <= 0.0f ||
         view[3] != 0.0f || view[7] != 0.0f || view[11] != 0.0f || view[15] != 1.0f)
         return reject("finite reverse-Z/view layout");
-    for (size_t i = 0; i < projection.size(); ++i)
-        if (unjittered[i] != ((i == 8 || i == 9) ? 0.0f : projection[i])) return reject("unjittered projection mismatch");
     if (std::abs(projection[8] * float(width) * 0.5f) > 2.0f ||
         std::abs(projection[9] * float(height) * 0.5f) > 2.0f ||
         std::abs(double(projection[5]) / projection[0] - double(width) / height) > 0.0001)

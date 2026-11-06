@@ -998,14 +998,23 @@ void WindowContext::UpdateTitle() {
 	}
 
 	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
-	auto text = fmt::format(
-	    "Tohi-GT7 | [{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
-	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
-	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
-	    device_name, processor_name, frame_num, current_fps);
-	if (Gt7FrameGen::Requested()) {
-		text += Gt7FrameGen::IsGenerating() ? " [FSR FG: 2x]" : " [FSR FG: standby]";
+	// Put graphics status before hardware/build details so it stays visible in
+	// a normal-sized window. FPS remains the guest/game cadence, not display FPS.
+	auto text = fmt::format("Tohi-GT7 | game fps: {:.0f}", current_fps);
+	const auto fg = Gt7FrameGen::GetStatus();
+	if (fg.reason == Gt7FrameGen::StatusReason::Off) {
+		text += " [FSR FG: off]";
+	} else {
+		const auto* state = fg.reason == Gt7FrameGen::StatusReason::ActiveDispatch ? "active"
+		    : Gt7FrameGen::IsStatusError(fg.reason) ? "error" : "standby";
+		text += fg.reason == Gt7FrameGen::StatusReason::ActiveDispatch
+		    ? " [FSR FG: 2x active]"
+		    : fmt::format(" [FSR FG: {} / {}]", state, Gt7FrameGen::StatusReasonText(fg.reason));
 	}
+	text += fmt::format(" | {}{}{}{}{} | [{} | {}] [{}] [{}], frame: {}",
+	    (has_title ? title : ""), (has_title_id ? ", " : ""), (has_title_id ? title_id : ""),
+	    (has_app_ver ? ", " : ""), (has_app_ver ? app_ver : ""),
+	    KYTY_BUILD_LABEL, build_type, device_name, processor_name, frame_num);
 
 	struct TitleUpdate {
 		SDL_Window*  window;

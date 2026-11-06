@@ -24,7 +24,7 @@ namespace {
 
 // Bump when the encoding below changes in a way the source version cannot see (it hashes this
 // file too, so this is belt and braces).
-constexpr uint32_t FormatVersion = 4;           // Round 118: BindingLayout::partition_target_dword.
+constexpr uint32_t FormatVersion = 5;           // Proved GT7 camera-position metadata.
 constexpr uint32_t FileMagic     = 0x4344534bu; // "KSDC"
 constexpr uint64_t MaxFileSize   = uint64_t {256} << 20u;
 
@@ -216,6 +216,7 @@ void Visit(Io& io, T& v) {
 	io(v.scratch_dwords);
 	io(v.param_export_mask);
 	io(v.has_address_writes);
+	io(v.gt7_camera_position);
 	io(v.info);
 	io(v.bindings);
 }

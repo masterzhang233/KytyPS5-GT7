@@ -27,6 +27,7 @@
 #include "graphics/host_gpu/renderer/gpuTiming.h"
 #include "graphics/host_gpu/renderer/gt7Dlss.h"
 #include "graphics/host_gpu/renderer/gt7DlssDrawChecks.h"
+#include "graphics/host_gpu/renderer/gt7FrameGenCamera.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/occlusionQueries.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -2687,6 +2688,62 @@ static bool Gt7DlssFullViewport(const CommandBuffer& buffer, uint32_t width, uin
 	return scissor.left == 0 && scissor.top == 0 && scissor.right == int(width) && scissor.bottom == int(height);
 }
 
+// The camera decoder reconstructs distance from unmodified reverse-Z z/w.
+// A proved position expression is insufficient if rasterization changes that
+// depth or redirects the vertices to another viewport/layer.
+static Gt7FrameGenCamera::RasterState Gt7FrameGenerationRasterState(const CommandBuffer& buffer,
+                                                                 const ShaderVertexInputInfo& vertex,
+                                                                 const RenderDepthInfo& depth) {
+	const auto& ctx = buffer.GetRegisters();
+	const auto& clip = ctx.GetClipControl();
+	const auto& viewport = ctx.GetScreenViewport().viewports[0];
+	const auto& mode = ctx.GetModeControl();
+	Gt7FrameGenCamera::RasterState raster {
+		.z_scale = viewport.zscale, .z_offset = viewport.zoffset,
+		.position_format = vertex.clip_space.position_format,
+		.dx_clip_space = clip.dx_clip_space,
+		.min_z_clip_enabled = !clip.min_z_clip_disable,
+		.max_z_clip_enabled = !clip.max_z_clip_disable,
+		.poly_offset_front = mode.poly_offset_front_enable,
+		.poly_offset_back = mode.poly_offset_back_enable,
+		.clip_space_conversion = vertex.clip_space.enabled,
+	};
+	for (const auto& output : vertex.stage.program->info.outputs) {
+		raster.indexed_viewport |= output.kind == ShaderRecompiler::IR::StageOutputKind::ViewportIndex;
+		raster.layer_output |= output.kind == ShaderRecompiler::IR::StageOutputKind::Layer;
+	}
+	// PipelineCache specializes LayerLimitSpecId to the smallest attachment view
+	// layer count. A one-layer depth attachment therefore forces every Layer export
+	// to zero in EmitAuxPositionExport. The observer additionally requires that
+	// depth and motion use complete base views of single-layer backing images.
+	if (depth.image_id && depth.depth_test_enable && depth.desc.view_info.layer_count == 1)
+		raster.layer_limit = 1;
+	return raster;
+}
+
+static bool Gt7FrameGenerationCameraRaster(const CommandBuffer& buffer,
+                                         const ShaderVertexInputInfo& vertex,
+                                         const RenderDepthInfo& depth) {
+	const auto raster = Gt7FrameGenerationRasterState(buffer, vertex, depth);
+	const bool full_viewport = Gt7DlssFullViewport(buffer, 1920, 1080);
+	const bool compatible = full_viewport && Gt7FrameGenCamera::CompatibleRaster(raster);
+	if (!compatible) {
+		static std::atomic<int64_t> next_report {0};
+		const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+		    std::chrono::steady_clock::now().time_since_epoch()).count();
+		auto next = next_report.load(std::memory_order_relaxed);
+		if (now >= next && next_report.compare_exchange_strong(next, now + 5000, std::memory_order_relaxed))
+			std::printf("GT7 FSR FG: camera raster rejected vs=%016llx full_viewport=%u z=%g,%g dx=%u z_clip=%u/%u bias=%u/%u format=%u converted=%u viewport_output=%u layer_output=%u layer_limit=%u\n",
+			    static_cast<unsigned long long>(vertex.stage.program->shader_hash), full_viewport ? 1u : 0u,
+			    raster.z_scale, raster.z_offset, raster.dx_clip_space ? 1u : 0u,
+			    raster.min_z_clip_enabled ? 1u : 0u, raster.max_z_clip_enabled ? 1u : 0u,
+			    raster.poly_offset_front ? 1u : 0u, raster.poly_offset_back ? 1u : 0u,
+			    raster.position_format, raster.clip_space_conversion ? 1u : 0u,
+			    raster.indexed_viewport ? 1u : 0u, raster.layer_output ? 1u : 0u, raster.layer_limit);
+	}
+	return compatible;
+}
+
 static bool Gt7DlssTextureShape(const TextureBinding& texture, uint32_t width, uint32_t height,
                                vk::Format format) {
 	const auto& view = texture.desc.view_info;
@@ -2968,16 +3025,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				    color.desc.info.extent.width == 1920 && color.desc.info.extent.height == 1080) {
 					dlss->DescribeFrameGenerationDraw(vertex_stages.front().stage, ps, state.depth_info,
 					                                  {state.color_info, state.color_count},
-					                                  Gt7DlssFullViewport(buffer, 1920, 1080), writes || address_writes);
+					                                  Gt7DlssFullViewport(buffer, 1920, 1080), writes || address_writes,
+					                                  Gt7FrameGenerationRasterState(buffer, vertex_stages.front(), state.depth_info));
 					break;
 				}
 			}
 		}
 		if (m_context.GetGraphics().gt7_fsr_present_queue != nullptr &&
-		    Gt7Dlss::IsFrameGenerationCameraShader(vs) && !mesh_active && vertex_stages.size() == 1 &&
+		    Gt7Dlss::IsFrameGenerationCameraShader(vertex_stages.front().stage) && !mesh_active && vertex_stages.size() == 1 &&
 		    vertex_stages.front().stage.program->stage == ShaderType::Vertex &&
 		    state.ps_active && !state.ps_input_info.ps_depth_export_enable &&
-		    !writes && !address_writes && Gt7DlssFullViewport(buffer, 1920, 1080)) {
+		    !writes && !address_writes && Gt7FrameGenerationCameraRaster(buffer, vertex_stages.front(), state.depth_info)) {
 			dlss->ObserveFrameGenerationCamera(vertex_stages.front().stage, state.depth_info,
 			                                  {state.color_info, state.color_count});
 		}
@@ -3017,8 +3075,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					requested_glyph_capture = true;
 					FrameGraph::RequestCapture();
 				}
-				if (++failures <= 8 || failures % 300 == 0 || request_capture)
-					LOGF("GT7 FSR FG: UI guard failure #%llu vs=%016" PRIx64 " ps=%016" PRIx64
+				const bool log_report = ++failures <= 8 || failures % 300 == 0 || request_capture;
+				// Retain detailed diagnostics in Silent mode without logging each
+				// rejected draw. The atomic deadline is shared by all contexts.
+				static std::atomic<int64_t> next_stdout_report {0};
+				const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+				    std::chrono::steady_clock::now().time_since_epoch()).count();
+				auto next = next_stdout_report.load(std::memory_order_relaxed);
+				const bool stdout_report = now >= next && next_stdout_report.compare_exchange_strong(
+				    next, now + 5000, std::memory_order_relaxed);
+				if (log_report || stdout_report) {
+					char message[1024] {};
+					std::snprintf(message, sizeof(message),
+					     "GT7 FSR FG: UI guard failure #%llu vs=%016" PRIx64 " ps=%016" PRIx64
 					     " mask=0x%x mesh=%u stages=%zu stage_type=%u ps_active=%u storage=%u address=%u"
 					     " depth=%u:%u depth_test=%u depth_write=%u ps_depth=%u blend=%u color=%u/%u/%u"
 					     " alpha=%u/%u/%u separate=%u capture_requested=%u\n",
@@ -3031,6 +3100,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					     blend.color_srcblend, blend.color_comb_fcn, blend.color_destblend,
 					     blend.alpha_srcblend, blend.alpha_comb_fcn, blend.alpha_destblend,
 					     unsigned(blend.separate_alpha_blend), unsigned(request_capture));
+					if (log_report) LOGF("%s", message);
+					if (stdout_report) {
+						std::printf("%s", message);
+						std::fflush(stdout);
+					}
+				}
 			}
 			dlss->CheckFrameGenerationOutputDraw({state.color_info, state.color_count}, bindings.pixel ? &*bindings.pixel : nullptr,
 			    vs, ps, ui_reject_mask == 0);
@@ -3043,6 +3118,55 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    Gt7DlssFullViewport(buffer, 3840, 2160)) {
 				fg_capture_hudless = dlss->FrameGenerationTonemapMatches(state.vertex_info[0],
 				    *bindings.pixel, state.color_info[0]);
+			} else if (ps == 0xedb9cdad0985bf44ULL && vs == 0xf13bd2584bf580c0ULL) {
+				// This branch observes only the exact tone-map pair rejected by
+				// the unchanged gate above. It never accepts another draw or dumps
+				// unrelated shaders. One report per five seconds, even across contexts.
+				static std::atomic<int64_t> next_tonemap_report {0};
+				const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+				    std::chrono::steady_clock::now().time_since_epoch()).count();
+				auto next = next_tonemap_report.load(std::memory_order_relaxed);
+				if (now >= next && next_tonemap_report.compare_exchange_strong(
+				        next, now + 5000, std::memory_order_relaxed)) {
+					const auto& registers = buffer.GetRegisters();
+					const auto& screen = registers.GetScreenViewport();
+					const auto& viewport = screen.viewports[0];
+					const auto target_mask = render_target_mask_slot(registers.GetRenderTargetMask(), 0);
+					const bool full_viewport = Gt7DlssFullViewport(buffer, 3840, 2160);
+					const auto scissor = calc_final_scissor(screen, registers.GetScanModeControl(), {3840, 2160}, 0);
+					// 0 direct, 1 ordinary VS, 2 PS active, 3 storage, 4 address writes,
+					// 5 bindings, 6 target count, 7 depth, 8 PS depth export, 9 blending,
+					// 10 vertex count, 11 topology, 12 target mask, 13 full viewport.
+					const uint32_t mask = (!direct ? 1u << 0 : 0u) |
+					    (!ordinary_vertex ? 1u << 1 : 0u) | (!state.ps_active ? 1u << 2 : 0u) |
+					    (writes ? 1u << 3 : 0u) | (address_writes ? 1u << 4 : 0u) |
+					    (!bindings.pixel ? 1u << 5 : 0u) | (state.color_count != 1 ? 1u << 6 : 0u) |
+					    (state.depth_info.image_id ? 1u << 7 : 0u) |
+					    (state.ps_input_info.ps_depth_export_enable ? 1u << 8 : 0u) |
+					    (blend.enable ? 1u << 9 : 0u) | (draw.index_count != 4 ? 1u << 10 : 0u) |
+					    (topology != vk::PrimitiveTopology::eTriangleFan ? 1u << 11 : 0u) |
+					    (target_mask != 0xf ? 1u << 12 : 0u) | (!full_viewport ? 1u << 13 : 0u);
+					std::printf("GT7 FSR FG: tone-map draw gate rejected vs=%016" PRIx64 " ps=%016" PRIx64
+					    " mask=0x%x direct=%u ordinary=%u mesh=%u stages=%zu stage_type=%u ps_active=%u storage=%u address=%u"
+					    " pixel_bindings=%u targets=%u depth=%u:%u depth_test=%u depth_write=%u ps_depth=%u blend=%u"
+					    " indexed=%u vertices=%u instances=%u first=%u/%u indirect=%u/%u topology=%u target_mask=0x%x"
+					    " full_viewport=%u viewport=%g,%g,%g,%g vte=0x%x clip_disable=%u scissor=%d,%d,%d,%d\n",
+					    vs, ps, mask, unsigned(direct), unsigned(ordinary_vertex), unsigned(mesh_active),
+					    vertex_stages.size(), unsigned(vertex_stages.front().stage.program->stage),
+					    unsigned(state.ps_active), unsigned(writes), unsigned(address_writes),
+					    unsigned(bool(bindings.pixel)), state.color_count,
+					    state.depth_info.image_id.index, state.depth_info.image_id.generation,
+					    unsigned(state.depth_info.depth_test_enable), unsigned(state.depth_info.depth_write_enable),
+					    unsigned(state.ps_input_info.ps_depth_export_enable), unsigned(blend.enable),
+					    unsigned(draw.IsIndexed()), draw.index_count, draw.instance_count,
+					    emit.first_vertex, emit.first_instance,
+					    unsigned(emit.gpu_args_address != 0), unsigned(emit.gpu_instance_count_address != 0),
+					    unsigned(topology), target_mask, unsigned(full_viewport),
+					    double(viewport.xscale), double(viewport.xoffset), double(viewport.yscale), double(viewport.yoffset),
+					    screen.transform_control, unsigned(registers.GetClipControl().clip_disable),
+					    scissor.left, scissor.top, scissor.right, scissor.bottom);
+					std::fflush(stdout);
+				}
 			}
 		}
 		const bool taa = ps == 0xc3113b114fb02e5dULL && vs == 0xf13bd2584bf580c0ULL;
@@ -3062,12 +3186,39 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				writes_scene |= dlss->MatchesScene(state.color_info[i]);
 			if (writes_scene) {
 				bool expected = false;
-				if (direct && bindings.pixel && state.color_count == 1 && Gt7DlssFullViewport(buffer, 1920, 1080)) {
+				// Diagnostic execution bits: outer gate, blur geometry, motion,
+				// depth, alternate motion, overlay, initial expected, resource
+				// checks entered, final expected, geometric effect. These never drive acceptance.
+				// Resource rejection bits: missing stage, unbounded access,
+				// invalid/feedback texture, invalid/feedback buffer.
+				uint32_t writer_checks = 0, writer_resource_reject = 0;
+				uint32_t reject_stage = UINT32_MAX, reject_index = UINT32_MAX, reject_detail = 0;
+				const char* reject_kind = "none";
+				const auto note_resource_reject = [&](const char* kind, size_t stage, size_t index, uint32_t detail) {
+					if (reject_stage != UINT32_MAX) return;
+					reject_kind = kind;
+					reject_stage = static_cast<uint32_t>(stage);
+					reject_index = static_cast<uint32_t>(index);
+					reject_detail = detail;
+				};
+				// Audited procedural RGBA geometry. Its VS samples two images, so zero
+				// pixel textures alone is not evidence of independence: the all-stage
+				// feedback/resource checks below remain mandatory for every instance.
+				const bool geometric_effect = vs == 0xd7debaa5ad604aa8ULL && ps == 0x9f53b507cd2cc216ULL &&
+				    !mesh_active && !draw.IsIndexed() && vertex_stages.size() == 1 &&
+				    vertex_stages.front().stage.program->stage == ShaderType::Vertex && state.ps_active &&
+				    emit.gpu_args_address == 0 && emit.gpu_instance_count_address == 0 && draw.instance_count >= 1 &&
+				    emit.first_vertex == 0 && emit.first_instance == 0 && draw.index_count > 0 && draw.index_count % 3 == 0 &&
+				    topology == vk::PrimitiveTopology::eTriangleList && bindings.pixel && bindings.pixel->images.empty() &&
+				    !state.depth_info.image_id && !state.depth_info.depth_test_enable && !state.depth_info.depth_write_enable;
+				if ((direct || geometric_effect) && bindings.pixel && state.color_count == 1 && Gt7DlssFullViewport(buffer, 1920, 1080)) {
+					writer_checks |= 1u << 0;
 					const auto& images = bindings.pixel->images;
 					bool blur = false;
-					if (m_gt7_dlss_effects == 0 && vs == 0xf13bd2584bf580c0ULL &&
+					if (vs == 0xf13bd2584bf580c0ULL &&
 					    images.size() == 3 && draw.index_count == 4 &&
 					    topology == vk::PrimitiveTopology::eTriangleStrip) {
+						writer_checks |= 1u << 1;
 						// The captured post effects have different inputs; keep each shader's
 						// exact resource contract rather than accepting an arbitrary blur draw.
 						const bool motion = ps == 0xcdbe808cb64e4b11ULL &&
@@ -3083,21 +3234,29 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						    Gt7DlssTextureShape(images[1],960,540,vk::Format::eR16G16Sfloat) &&
 						    Gt7DlssTextureShape(images[2],960,540,vk::Format::eR16G16B16A16Sfloat);
 						blur = motion || depth || alternate_motion;
+						writer_checks |= (motion ? 1u << 2 : 0u) | (depth ? 1u << 3 : 0u) |
+						                 (alternate_motion ? 1u << 4 : 0u);
 					}
-					const bool overlay = m_gt7_dlss_effects == 1 && ps == 0x939a0b13ee9531c5ULL &&
+					const bool overlay = ps == 0x939a0b13ee9531c5ULL &&
 					    vs == 0xdf39fc07bb648d84ULL && draw.index_count != 0 && draw.index_count % 6 == 0 && images.size() == 1 &&
 					    topology == vk::PrimitiveTopology::eTriangleList &&
 					    Gt7DlssTextureShape(images[0],256,384,vk::Format::eBc3UnormBlock);
-					expected = (blur || overlay) && bool(state.color_info[0].image_id) &&
+					writer_checks |= overlay ? 1u << 5 : 0u;
+					writer_checks |= geometric_effect ? 1u << 9 : 0u;
+					expected = (blur || overlay || geometric_effect) && bool(state.color_info[0].image_id) &&
 					    state.color_info[0].desc.info.data.Valid();
 					if (expected) {
+						writer_checks |= (1u << 6) | (1u << 7);
 						// Replaying source-alpha blending is valid only when the source does
 						// not read the destination being replaced. Check cache identity as well
 						// as guest aliases, and reject unenumerated image/address reads.
 						const auto& target = state.color_info[0];
 						const auto& target_image = m_context.GetTextureCache().GetImage(target.image_id);
-						for (const auto* stage : stages) {
+						for (size_t stage_index = 0; stage_index < stages.size(); ++stage_index) {
+							const auto* stage = stages[stage_index];
 							if (!stage->runtime || !*stage->runtime) {
+								writer_resource_reject |= 1u << 0;
+								note_resource_reject("stage", stage_index, 0, 1);
 								expected = false;
 								continue;
 							}
@@ -3105,25 +3264,60 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 							    stage->runtime->program->info.uses_dma ||
 							    std::ranges::any_of(stage->runtime->program->info.images, [](const auto& resource) {
 								    return resource.written || resource.bindless || resource.runtime;
-							    })) expected = false;
-							for (const auto& texture : stage->images) {
+							    })) {
+								writer_resource_reject |= 1u << 1;
+								note_resource_reject("unbounded", stage_index, 0,
+								    (!stage->bindless_heaps.empty() ? 1u : 0u) |
+								    (!stage->bindless_patches.empty() ? 2u : 0u) |
+								    (stage->runtime->program->info.uses_dma ? 4u : 0u) |
+								    (std::ranges::any_of(stage->runtime->program->info.images, [](const auto& resource) {
+								        return resource.written || resource.bindless || resource.runtime;
+								    }) ? 8u : 0u));
+								expected = false;
+							}
+							for (size_t i = 0; i < stage->images.size(); ++i) {
+								const auto& texture = stage->images[i];
 								if (!texture.image_id || texture.desc.type != TextureCache::BindingType::Texture ||
 								    !texture.desc.info.data.Valid() ||
 								    texture.image_id == target.image_id ||
 								    ImageRangeOverlaps(texture.desc.info.data, target.desc.info.data) ||
-								    m_context.GetTextureCache().GetImage(texture.image_id).backing.image == target_image.backing.image)
+								    m_context.GetTextureCache().GetImage(texture.image_id).backing.image == target_image.backing.image) {
+									writer_resource_reject |= 1u << 2;
+									note_resource_reject("texture", stage_index, i,
+									    (!texture.image_id ? 1u : 0u) |
+									    (texture.desc.type != TextureCache::BindingType::Texture ? 2u : 0u) |
+									    (!texture.desc.info.data.Valid() ? 4u : 0u) |
+									    (texture.image_id == target.image_id ? 8u : 0u) |
+									    (texture.desc.info.data.Valid() && ImageRangeOverlaps(texture.desc.info.data, target.desc.info.data) ? 16u : 0u) |
+									    (texture.image_id && m_context.GetTextureCache().GetImage(texture.image_id).backing.image ==
+									        target_image.backing.image ? 32u : 0u));
 									expected = false;
+								}
 							}
-							for (const auto& source : stage->buffer_sources) {
+							for (size_t i = 0; i < stage->buffer_sources.size(); ++i) {
+								const auto& source = stage->buffer_sources[i];
 								// Missing descriptors produce empty source records; they cannot alias.
 								if (source.size == 0) continue;
 								const GuestRange range {source.address, source.size};
-								if (!range.Valid() || ImageRangeOverlaps(range, target.desc.info.data)) expected = false;
+								if (!range.Valid() || ImageRangeOverlaps(range, target.desc.info.data)) {
+									writer_resource_reject |= 1u << 3;
+									note_resource_reject("buffer", stage_index, i,
+									    (!range.Valid() ? 1u : 0u) | (range.Valid() && ImageRangeOverlaps(range, target.desc.info.data) ? 2u : 0u));
+									expected = false;
+								}
 							}
 						}
 					}
 				}
+				// Verified source-over draws update the same P/A layer in guest order.
+				// A second blur or additional overlay needs the same per-draw resource
+				// and pipeline checks, not a fixed count from the first capture.
+				if (expected && m_gt7_dlss_effects == std::numeric_limits<uint32_t>::max()) {
+					dlss->CancelFrame("scene effect counter overflow");
+					expected = false;
+				}
 				if (expected) {
+					writer_checks |= 1u << 8;
 					dlss_effect_pipeline = m_context.GetPipelineCache().TryGetGraphicsPipeline(
 					    {state.color_info, state.color_count}, state.depth_info, vertex_stages,
 					    buffer, &state.ps_input_info, topology, primitive_restart_enable,
@@ -3139,6 +3333,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					static uint64_t requested_frame = std::numeric_limits<uint64_t>::max();
 					const auto number = ++rejected_writers;
 					const auto& registers = buffer.GetRegisters();
+					const auto& blend = registers.GetBlendControl(0);
 					const auto& viewport = registers.GetScreenViewport();
 					const auto& v = viewport.viewports[0];
 					const auto scissor = calc_final_scissor(viewport, registers.GetScanModeControl(), {1920, 1080}, 0);
@@ -3215,11 +3410,87 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 							}
 						}
 					}
-					dlss->CancelFrame(expected ? "verified scene writer effect pipeline unavailable"
-					                           : "unverified scene writer draw or textures");
+					// Preserve the cancelling draw in the frame's first-cause record.
+					// Unlike LOGF this is emitted at presentation even with printf Silent,
+					// under the existing five-second scene report budget. Shape masks
+					// below are diagnostic-only (bits 0/1/2 identify matching textures).
+					const auto shape_at = [&](size_t i, uint32_t width, uint32_t height, vk::Format format) {
+						return bindings.pixel && i < image_count &&
+						       Gt7DlssTextureShape(bindings.pixel->images[i], width, height, format);
+					};
+					const uint32_t motion_shapes =
+					    (shape_at(0, 1920, 1080, vk::Format::eR16G16Sfloat) ? 1u : 0u) |
+					    (shape_at(1, 960, 540, vk::Format::eR16G16B16A16Sfloat) ? 2u : 0u) |
+					    (shape_at(2, 960, 540, vk::Format::eR16G16Sfloat) ? 4u : 0u);
+					const uint32_t depth_shapes =
+					    (shape_at(0, 1920, 1080, vk::Format::eR32Sfloat) ? 1u : 0u) |
+					    (shape_at(1, 960, 540, vk::Format::eR16G16B16A16Sfloat) ? 2u : 0u) |
+					    (shape_at(2, 960, 540, vk::Format::eR16Sfloat) ? 4u : 0u);
+					const uint32_t alternate_shapes =
+					    (shape_at(0, 1920, 1080, vk::Format::eR16G16Sfloat) ? 1u : 0u) |
+					    (shape_at(1, 960, 540, vk::Format::eR16G16Sfloat) ? 2u : 0u) |
+					    (shape_at(2, 960, 540, vk::Format::eR16G16B16A16Sfloat) ? 4u : 0u);
+					std::array<char, 2048> details {};
+					size_t used = 0;
+					const auto append = [&](const char* format, auto... args) {
+						if (used >= details.size() - 1) return;
+						const auto remaining = details.size() - used;
+						const int written = std::snprintf(details.data() + used, remaining, format, args...);
+						if (written > 0) used += std::min<size_t>(static_cast<size_t>(written), remaining - 1);
+					};
+					append("blend=%u color=%u/%u/%u alpha=%u/%u/%u separate=%u bypass=%u color_control=%u/0x%x"
+					       " mask=0x%x alpha_to_mask=%u aa=%u/%u aa_mask=0x%x/0x%x resource_first=%s:%u:%u:0x%x ",
+					       unsigned(blend.enable), blend.color_srcblend, blend.color_comb_fcn, blend.color_destblend,
+					       blend.alpha_srcblend, blend.alpha_comb_fcn, blend.alpha_destblend, unsigned(blend.separate_alpha_blend),
+					       unsigned(registers.GetRenderTarget(0).info.blend_bypass), registers.GetColorControl().mode,
+					       registers.GetColorControl().op, render_target_mask_slot(registers.GetRenderTargetMask(), 0),
+					       unsigned(registers.GetShaderRegisters().AlphaToMask()), registers.GetAaConfig().msaa_num_samples,
+					       registers.GetAaConfig().msaa_exposed_samples, registers.GetAaMask(0), registers.GetAaMask(1),
+					       reject_kind, reject_stage, reject_index, reject_detail);
+					append("checks=0x%x resource_reject=0x%x effects=%u expected=%u direct=%u indexed=%u vertices=%u instances=%u"
+					       " first=%u/%u topology=%u targets=%u target_valid=%u/%u depth=%u:%u depth_test=%u depth_write=%u"
+					       " mesh=%u stages=%zu gpu_args=%u gpu_instances=%u pixel=%u full_viewport=%u"
+					       " viewport=%g,%g,%g,%g transform=0x%x clip_disable=%u scissor=%d,%d,%d,%d"
+					       " motion_shapes=0x%x depth_shapes=0x%x alternate_shapes=0x%x overlay_shape=%u textures=%zu logged=%zu",
+					       writer_checks, writer_resource_reject, m_gt7_dlss_effects, unsigned(expected), unsigned(direct),
+					       unsigned(draw.IsIndexed()), draw.index_count, draw.instance_count, emit.first_vertex, emit.first_instance,
+					       unsigned(topology), state.color_count,
+					       unsigned(state.color_count && bool(state.color_info[0].image_id)),
+					       unsigned(state.color_count && state.color_info[0].desc.info.data.Valid()),
+					       state.depth_info.image_id.index, state.depth_info.image_id.generation,
+					       unsigned(state.depth_info.depth_test_enable), unsigned(state.depth_info.depth_write_enable),
+					       unsigned(mesh_active), vertex_stages.size(), unsigned(emit.gpu_args_address != 0),
+					       unsigned(emit.gpu_instance_count_address != 0), unsigned(bool(bindings.pixel)), unsigned(full_viewport),
+					       double(v.xscale), double(v.xoffset), double(v.yscale), double(v.yoffset), viewport.transform_control,
+					       unsigned(registers.GetClipControl().clip_disable), scissor.left, scissor.top, scissor.right, scissor.bottom,
+					       motion_shapes, depth_shapes, alternate_shapes,
+					       unsigned(shape_at(0, 256, 384, vk::Format::eBc3UnormBlock)), image_count, std::min<size_t>(image_count, 4));
+					const auto& vertex_images = bindings.vertex[0].images;
+					append(" vertex_textures=%zu", vertex_images.size());
+					for (size_t i = 0; i < std::min<size_t>(vertex_images.size(), 2); ++i) {
+						const auto& texture = vertex_images[i];
+						const auto& info = texture.desc.info;
+						const auto& view = texture.desc.view_info;
+						append(" vtex%zu={id=%u:%u binding=%u extent=%ux%ux%u samples=%u format=%u type=%u mips=%u+%u layers=%u+%u}",
+						       i, texture.image_id.index, texture.image_id.generation, unsigned(texture.desc.type),
+						       info.extent.width, info.extent.height, info.extent.depth, info.samples, unsigned(view.format),
+						       unsigned(view.type), view.base_level, view.level_count, view.base_layer, view.layer_count);
+					}
+					if (bindings.pixel) for (size_t i = 0; i < std::min<size_t>(image_count, 4); ++i) {
+						const auto& texture = bindings.pixel->images[i];
+						const auto& info = texture.desc.info;
+						const auto& view = texture.desc.view_info;
+						append(" tex%zu={id=%u:%u view=%u binding=%u extent=%ux%ux%u samples=%u format=%u type=%u mips=%u+%u layers=%u+%u aspect=0x%x}",
+						       i, texture.image_id.index, texture.image_id.generation, unsigned(bool(texture.image_view)),
+						       unsigned(texture.desc.type), info.extent.width, info.extent.height, info.extent.depth,
+						       info.samples, unsigned(view.format), unsigned(view.type), view.base_level, view.level_count,
+						       view.base_layer, view.layer_count, unsigned(view.aspect));
+					}
+					dlss->CancelSceneWriterFrame(expected ? "verified scene writer effect pipeline unavailable"
+					                                      : "unverified scene writer draw or textures", vs, ps, details.data());
 				}
 			} else if (direct && ps == 0x939a0b13ee9531c5ULL && vs == 0xdf39fc07bb648d84ULL &&
-			           m_gt7_dlss_effects <= 2 && draw.index_count == 4 && bindings.pixel &&
+			           draw.index_count == 4 && bindings.pixel &&
 			           topology == vk::PrimitiveTopology::eTriangleStrip &&
 			           bindings.pixel->images.size() == 1 && state.color_count == 1 &&
 			           !state.depth_info.image_id && !buffer.GetRegisters().GetBlendControl(0).enable &&

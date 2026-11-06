@@ -142,7 +142,7 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 1.0.0)
+project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 1.0.1)
 
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
@@ -638,6 +638,18 @@ function(configure_macos_guest_address_space target)
 endfunction()
 
 add_kyty_full_emulator_test(shader_cfg_tests "${KYTY_TESTS_DIR}/shaderCfgTests.cpp")
+set(KYTY_CJK_FONT_ROOT "${KYTY_THIRD_PARTY_DIR}/fonts/noto-cjk")
+set(KYTY_CJK_FONT_FILE "${KYTY_CJK_FONT_ROOT}/NotoSansCJKsc-Regular.otf")
+file(SHA256 "${KYTY_CJK_FONT_FILE}" kyty_cjk_font_sha256)
+if(NOT kyty_cjk_font_sha256 STREQUAL "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b")
+	message(FATAL_ERROR "The bundled Noto CJK font does not match the pinned upstream file")
+endif()
+# CTest and direct Ninja-build runs use the same fonts directory as the installed program.
+configure_file("${KYTY_CJK_FONT_FILE}"
+	"${CMAKE_CURRENT_BINARY_DIR}/fonts/NotoSansCJKsc-Regular.otf" COPYONLY)
+target_sources(shader_cfg_tests PRIVATE "${KYTY_TESTS_DIR}/FontUnicodeTests.cpp")
+set_source_files_properties("${KYTY_TESTS_DIR}/FontUnicodeTests.cpp" PROPERTIES
+	COMPILE_DEFINITIONS "KYTY_TEST_LATIN_FONT=\"${KYTY_THIRD_PARTY_DIR}/tracy/profiler/src/font/Roboto-Regular.ttf\";KYTY_TEST_CJK_FONT=\"${KYTY_CJK_FONT_FILE}\"")
 add_kyty_full_emulator_test(ajm_atrac9_config_tests "${KYTY_TESTS_DIR}/ajmAtrac9ConfigTests.cpp")
 add_executable(gt7_framegen_camera_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/Gt7FrameGenCameraTests.cpp")
@@ -645,6 +657,9 @@ target_include_directories(gt7_framegen_camera_tests PRIVATE "${KYTY_SOURCE_DIR}
 add_executable(gt7_framegen_dcc_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/Gt7FrameGenDccTests.cpp")
 target_include_directories(gt7_framegen_dcc_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(gt7_framegen_status_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Gt7FrameGenStatusTests.cpp")
+target_include_directories(gt7_framegen_status_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # Offline batch translation of shaders extracted from game files; a tool, not a test.
 add_kyty_full_emulator_test(shader_batch_tool "${KYTY_TESTS_DIR}/ShaderBatchTool.cpp")
 if(KYTY_CLANG_CL)
@@ -917,6 +932,7 @@ endif()
 if(BUILD_TESTING)
 	add_test(NAME gt7_framegen_camera COMMAND $<TARGET_FILE:gt7_framegen_camera_tests>)
 	add_test(NAME gt7_framegen_dcc COMMAND $<TARGET_FILE:gt7_framegen_dcc_tests>)
+	add_test(NAME gt7_framegen_status COMMAND $<TARGET_FILE:gt7_framegen_status_tests>)
 	add_test(NAME emulator_user_name_cli
 	         COMMAND $<TARGET_FILE:kyty_emulator> --help --user-name 1234567890123456)
 	add_test(NAME emulator_user_name_too_long
@@ -929,6 +945,9 @@ if(BUILD_TESTING)
 	set_tests_properties(emulator_present_mode_invalid PROPERTIES WILL_FAIL TRUE)
 	add_test(NAME ime_dialog COMMAND $<TARGET_FILE:ime_dialog_tests>)
 	add_test(NAME shader_cfg COMMAND $<TARGET_FILE:shader_cfg_tests>)
+	add_test(NAME gt7_camera_shader_contract
+	         COMMAND $<TARGET_FILE:shader_cfg_tests> --gt7-camera-only)
+	add_test(NAME font_unicode_fallback COMMAND $<TARGET_FILE:shader_cfg_tests> --font-unicode-only)
 	add_test(NAME ajm_atrac9_config COMMAND $<TARGET_FILE:ajm_atrac9_config_tests>)
 	add_test(NAME scalar_provenance COMMAND $<TARGET_FILE:scalar_provenance_tests>)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
@@ -1014,6 +1033,7 @@ if(BUILD_TESTING)
 	add_custom_target(kyty_tests DEPENDS
 		gt7_framegen_camera_tests
 		gt7_framegen_dcc_tests
+		gt7_framegen_status_tests
 		ime_dialog_tests
 		ajm_atrac9_config_tests
 		shader_cfg_tests
@@ -1184,6 +1204,9 @@ if(APPLE)
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
+install(FILES "${KYTY_CJK_FONT_FILE}" DESTINATION fonts)
+install(FILES "${KYTY_CJK_FONT_ROOT}/OFL.txt" "${KYTY_CJK_FONT_ROOT}/NOTICE.md"
+	"${KYTY_CJK_FONT_ROOT}/provenance.json" DESTINATION licenses/fonts/noto-cjk)
 option(KYTY_PACKAGE_DLSS "Install the separately built DLSS backend and NVIDIA runtime" OFF)
 set(KYTY_DLSS_BACKEND_FILE "" CACHE FILEPATH "Separately built kyty_dlss_backend.dll")
 set(KYTY_NGX_SDK_ROOT "" CACHE PATH "External NVIDIA DLSS SDK for runtime packaging")
@@ -1240,6 +1263,9 @@ if(WIN32)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-DLSS-EXPERIMENT.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/GT7-FSR-FRAME-GENERATION.md" DESTINATION docs)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.0.zh-CN.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/RELEASE-1.0.1.zh-CN.md" DESTINATION docs)
+	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Start-GT7-Desktop.ps1"
+		"${CMAKE_CURRENT_SOURCE_DIR}/scripts/Start-GT7-Desktop.cmd" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION .)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Kyty-MIT.txt" DESTINATION licenses)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/Qt-NOTICE.md"

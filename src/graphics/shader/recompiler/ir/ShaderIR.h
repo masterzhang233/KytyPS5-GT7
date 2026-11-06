@@ -626,6 +626,8 @@ struct CompiledShaderInfo {
 	uint32_t                      scratch_dwords      = 0;
 	uint32_t                      param_export_mask   = 0;
 	bool                          has_address_writes  = false;
+	// Proved on native SSA, before scalar reads become resource snapshots.
+	bool                          gt7_camera_position = false;
 	ShaderInfo                    info;
 	BindingLayout                 bindings;
 };
@@ -742,6 +744,7 @@ struct Program: ResourcePlan {
 	// Decoder-only details (such as NSA register numbers) have already become IR operands.
 	std::vector<ExportInfo>       export_info;
 	bool                          has_address_writes = false;
+	bool                          gt7_camera_position = false;
 	bool                          shader_info_complete = false;
 	BindingLayout                 bindings;
 	bool                          binding_layout_complete = false;

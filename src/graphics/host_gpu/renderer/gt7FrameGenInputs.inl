@@ -1,8 +1,16 @@
 // Included by gt7Dlss.cpp so source input images remain private to the SR helper.
+bool Gt7Dlss::IsFrameGenerationCameraShader(const ShaderStageRuntime& vertex) {
+    if (!vertex || vertex.program->stage != ShaderType::Vertex) return false;
+    const auto hash = vertex.program->shader_hash;
+    return vertex.program->gt7_camera_position || hash == 0x48a3c58d37f8582fULL ||
+           hash == 0xd24c8423cd8ac4f3ULL || hash == 0x38971d1e2fbabfc8ULL;
+}
+
 void Gt7Dlss::DescribeFrameGenerationDraw(const ShaderStageRuntime& vertex, uint64_t pixel_shader,
                                         const RenderDepthInfo& depth,
                                         std::span<const RenderColorInfo> colors,
-                                        bool full_viewport, bool storage_writes) {
+                                        bool full_viewport, bool storage_writes,
+                                        const Gt7FrameGenCamera::RasterState& raster) {
     auto& s = *m_impl;
     if (!s.graphics.gt7_fsr_present_queue || !Gt7FrameGen::Requested() ||
         !vertex || !full_viewport || !depth.image_id) return;
@@ -15,6 +23,16 @@ void Gt7Dlss::DescribeFrameGenerationDraw(const ShaderStageRuntime& vertex, uint
     if (!Shape(source_depth, InputWidth, InputHeight, vk::Format::eD32SfloatS8Uint) ||
         !Shape(source_motion, InputWidth, InputHeight, vk::Format::eR16G16Sfloat)) return;
     ++s.fg_candidate_draws;
+    if (CameraProbeEnabled() &&
+        vertex.program->stage == ShaderType::Vertex && !storage_writes && s.fg_temporal_attempts == 0 &&
+        depth.depth_test_enable && depth.depth_write_enable &&
+        depth.depth_compare_op == vk::CompareOp::eGreaterOrEqual &&
+        !depth.guest_array_layer && BaseView(depth.desc) && BaseView(motion->desc) &&
+        !motion->guest_mip_level && !motion->guest_array_layer) {
+        CollectCameraProbe(s.fg_camera_probe, s.context, vertex, pixel_shader,
+                           depth.image_id, motion->image_id, s.fg_frame, s.fg_candidate_draws,
+                           IsFrameGenerationCameraShader(vertex), full_viewport, raster);
+    }
     const std::array<uint64_t, 2> signature {vertex.program->shader_hash, pixel_shader};
     if (s.fg_draw_signatures.size() >= 16 ||
         std::find(s.fg_draw_signatures.begin(), s.fg_draw_signatures.end(), signature) != s.fg_draw_signatures.end()) return;
@@ -34,7 +52,7 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
     auto& s = *m_impl;
     if (!s.graphics.gt7_fsr_present_queue || !Gt7FrameGen::Requested() || !vertex ||
         vertex.program->stage != ShaderType::Vertex ||
-        !IsFrameGenerationCameraShader(vertex.program->shader_hash)) return;
+        !IsFrameGenerationCameraShader(vertex)) return;
     auto& observations = s.fg_camera_observations;
     ++observations[CameraCalls];
     if (!depth.image_id || !depth.depth_test_enable || !depth.depth_write_enable ||
@@ -52,6 +70,8 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
     // A new scene writer after the temporal evaluation breaks the input/final
     // color association even if no second TAA has run yet.
     if (s.fg_temporal_attempts != 0) {
+        s.fg_scene_diagnostic.NoteFirst("late camera writer", "camera producer after temporal pass",
+                                      depth.image_id, motion->image_id, vertex.program->shader_hash);
         s.fg_camera_valid = false;
         s.fg_input_ambiguous = true;
         ++observations[CameraLate];
@@ -67,8 +87,13 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
         entry->depth_id = depth.image_id;
         entry->motion_id = motion->image_id;
     }
-    if (entry->rejected) { ++observations[CameraAlreadyRejected]; return; }
+    if (entry->rejected) {
+        NoteCameraProbeObservation(s.fg_camera_probe, vertex, depth.image_id, motion->image_id,
+                                   s.fg_frame, "pair already rejected");
+        ++observations[CameraAlreadyRejected]; return;
+    }
     const auto reject = [&](CameraObservation observation, const char* reason) {
+        NoteCameraProbeObservation(s.fg_camera_probe, vertex, depth.image_id, motion->image_id, s.fg_frame, reason);
         ++observations[observation]; entry->valid = false; entry->rejected = true; entry->reject_reason = reason;
     };
     const auto& user = vertex.resources->user_data;
@@ -78,7 +103,7 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
     }
     const size_t reg = 10 - base;
     const uint64_t address = uint64_t(user[reg]) | (uint64_t(user[reg + 1]) << 32u);
-    constexpr uint64_t LastByte = 1040;
+    constexpr uint64_t LastByte = 272;
     if (!address || (address & 3u) || address > std::numeric_limits<uint64_t>::max() - LastByte) {
         reject(CameraAddress, "camera pointer alignment/range"); return;
     }
@@ -96,8 +121,7 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
         return true;
     };
     std::array<float, 48> current {};
-    Gt7FrameGenCamera::Matrix unjittered {};
-    if (!read(80, current.data(), sizeof(current)) || !read(976, unjittered.data(), sizeof(unjittered))) {
+    if (!read(80, current.data(), sizeof(current))) {
         return;
     }
     Gt7FrameGenCamera::Matrix view_projection {}, view {}, projection {};
@@ -106,20 +130,24 @@ void Gt7Dlss::ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
     std::copy_n(current.begin() + 32, 16, projection.begin());
     Gt7FrameGenCamera::Parameters parameters {};
     const char* decode_failure = nullptr;
-    if (!Gt7FrameGenCamera::Decode(view_projection, view, projection, unjittered,
+    if (!Gt7FrameGenCamera::Decode(view_projection, view, projection,
                                    InputWidth, InputHeight, parameters, &decode_failure)) {
+        NoteCameraProbeMatrices(s.fg_camera_probe, vertex, depth.image_id, motion->image_id,
+                                s.fg_frame, address, view_projection, view, projection);
         reject(CameraMatrix, decode_failure); return;
     }
     if (entry->valid && (entry->view_projection != view_projection || entry->view != view ||
-                        entry->projection != projection || entry->unjittered != unjittered)) {
+                        entry->projection != projection)) {
+        NoteCameraProbeMatrices(s.fg_camera_probe, vertex, depth.image_id, motion->image_id,
+                                s.fg_frame, address, view_projection, view, projection);
         reject(CameraChanged, "camera changed for the same depth/motion targets"); return;
     }
     entry->view_projection = view_projection;
     entry->view = view;
     entry->projection = projection;
-    entry->unjittered = unjittered;
     entry->parameters = parameters;
     entry->valid = true;
+    NoteCameraProbeObservation(s.fg_camera_probe, vertex, depth.image_id, motion->image_id, s.fg_frame, "accepted");
     ++observations[CameraAccepted];
 }
 
@@ -137,12 +165,21 @@ bool Gt7Dlss::FrameGenerationTonemapMatches(const ShaderVertexInputInfo& vertex,
         !s.fg_scaled_scene_id || s.composites != s.boundary_composites + 1 ||
         !pixel.runtime || !*pixel.runtime || !vertex.stage ||
         pixel.runtime->program->shader_hash != 0xedb9cdad0985bf44ULL ||
-        vertex.stage.program->shader_hash != 0xf13bd2584bf580c0ULL) return false;
+        vertex.stage.program->shader_hash != 0xf13bd2584bf580c0ULL) {
+        ++s.fg_hudless_diagnostic.tonemap_calls;
+        s.fg_hudless_diagnostic.Note("tone-map precondition rejected",
+            !s.fg_scaled_scene_id ? "no scaled scene target" :
+            s.composites != s.boundary_composites + 1 ? "no single completed SR composite" :
+            "runtime, shader identity or FG configuration unavailable");
+        return false;
+    }
+    ++s.fg_hudless_diagnostic.tonemap_calls;
     // Exactly one final tone-map per scene. Never replace a prior snapshot after
     // UI has begun, even if a second superficially similar pass is encountered.
     ++s.fg_tonemap_attempts;
     s.fg_hudless_valid = false;
     const auto reject = [&](const char* reason) {
+        s.fg_hudless_diagnostic.Note("tone-map contract rejected", reason);
         if (++s.fg_tonemap_rejections <= 8 || s.fg_tonemap_rejections % 300 == 0)
             LOGF("GT7 FSR FG: HUD-less tone-map rejected #%llu frame=%llu: %s\n",
                  static_cast<unsigned long long>(s.fg_tonemap_rejections),
@@ -221,18 +258,32 @@ bool Gt7Dlss::FrameGenerationTonemapMatches(const ShaderVertexInputInfo& vertex,
     };
     if (!equal_bytes(address, quad) || !equal_bytes(matrix.Base48(), identity))
         return reject("tone-map fullscreen quad or identity matrix changed");
+    s.fg_hudless_diagnostic.Note("tone-map verified", "waiting for HUD-less copy");
     return true;
 }
 
 void Gt7Dlss::CaptureFrameGenerationHudless(CommandBuffer& buffer, const RenderColorInfo& target) {
     auto& s = *m_impl;
+    ++s.fg_hudless_diagnostic.capture_attempts;
     s.fg_hudless_valid = false;
-    if (s.fg_tonemap_attempts != 1 || !target.image_id) return;
+    if (s.fg_tonemap_attempts != 1 || !target.image_id) {
+        s.fg_hudless_diagnostic.Note("HUD-less copy rejected", "tone-map count or target identity");
+        return;
+    }
     auto& source = s.context.GetTextureCache().GetImage(target.image_id);
-    if (!(source.backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
-        source.backing.state.layout == vk::ImageLayout::eUndefined ||
-        !ConfigureFrameGenerationImage(s.graphics, s.fg_hudless,
-            vk::Format::eA2B10G10R10UnormPack32, GuestWidth, GuestHeight)) return;
+    if (!(source.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+        s.fg_hudless_diagnostic.Note("HUD-less copy rejected", "source lacks transfer usage");
+        return;
+    }
+    if (source.backing.state.layout == vk::ImageLayout::eUndefined) {
+        s.fg_hudless_diagnostic.Note("HUD-less copy rejected", "source layout undefined");
+        return;
+    }
+    if (!ConfigureFrameGenerationImage(s.graphics, s.fg_hudless,
+            vk::Format::eA2B10G10R10UnormPack32, GuestWidth, GuestHeight)) {
+        s.fg_hudless_diagnostic.Note("HUD-less copy rejected", "private image allocation unavailable");
+        return;
+    }
     s.scheduler.EndRendering();
     const auto command = buffer.Handle();
     const auto saved = source.backing.state;
@@ -249,6 +300,8 @@ void Gt7Dlss::CaptureFrameGenerationHudless(CommandBuffer& buffer, const RenderC
     s.fg_output_image = source.backing.image;
     s.fg_output_range = source.info.data;
     s.fg_hudless_valid = true;
+    s.fg_hudless_diagnostic.captured = true;
+    s.fg_hudless_diagnostic.Note("HUD-less captured", "none");
     if (Report(++s.fg_hudless_captures))
         LOGF("GT7 FSR FG: HUD-less capture #%llu frame=%llu target=%u:%u 3840x2160 format=%u after guest tone-map before UI\n",
              static_cast<unsigned long long>(s.fg_hudless_captures), static_cast<unsigned long long>(s.fg_frame),
@@ -382,6 +435,35 @@ void Gt7Dlss::CheckFrameGenerationOutputDraw(std::span<const RenderColorInfo> ta
             if (source.size && Overlap({source.address, source.size}, s.fg_output_range)) allowed = false;
     }
     if (allowed) { ++s.fg_ui_draws; return; }
+    auto& diagnostic = s.fg_hudless_diagnostic;
+    diagnostic.Note("display writer rejected", "unverified draw after HUD-less capture");
+    diagnostic.writer_vs = vs;
+    diagnostic.writer_ps = ps;
+    diagnostic.writer_overlay = ordinary_alpha_overlay;
+    diagnostic.writer_targets = targets.size();
+    // Diagnostic bits only; the acceptance expression above remains unchanged.
+    // 0 overlay, 1 target count, 2 bindings, 3 shader pair, 4 output identity,
+    // 5 base view, 6 target slot, 7 export mapping, 8 format, 9 bindless,
+    // 10 texture feedback/missing image, 11 buffer feedback.
+    uint32_t mask = (!ordinary_alpha_overlay ? 1u << 0 : 0u) |
+        (targets.size() != 1 ? 1u << 1 : 0u) | (!pixel ? 1u << 2 : 0u) |
+        (std::find(ui.begin(), ui.end(), std::array<uint64_t, 2>{vs, ps}) == ui.end() ? 1u << 3 : 0u);
+    if (targets.size() == 1) {
+        mask |= (targets[0].image_id != s.fg_output_id ? 1u << 4 : 0u) |
+            (!BaseView(targets[0].desc) ? 1u << 5 : 0u) |
+            (targets[0].target_slot != 0 ? 1u << 6 : 0u) |
+            (!targets[0].export_mapping.IsIdentity() ? 1u << 7 : 0u) |
+            (targets[0].desc.view_info.format != vk::Format::eA2B10G10R10UnormPack32 ? 1u << 8 : 0u);
+    }
+    if (pixel) {
+        if (!pixel->bindless_heaps.empty() || !pixel->bindless_patches.empty()) mask |= 1u << 9;
+        for (const auto& texture : pixel->images)
+            if (!texture.image_id || texture.image_id == s.fg_output_id ||
+                Overlap(texture.desc.info.data, s.fg_output_range)) mask |= 1u << 10;
+        for (const auto& source : pixel->buffer_sources)
+            if (source.size && Overlap({source.address, source.size}, s.fg_output_range)) mask |= 1u << 11;
+    }
+    diagnostic.writer_mask = mask;
     s.fg_hudless_valid = false;
     if (++s.fg_hudless_rejections <= 8 || s.fg_hudless_rejections % 300 == 0)
         LOGF("GT7 FSR FG: HUD-less rejected #%llu frame=%llu: unverified display writer vs=%016llx ps=%016llx overlay=%u targets=%zu after_ui=%u\n",
@@ -395,35 +477,96 @@ bool Gt7Dlss::CopyFrameGenerationInputs(CommandBuffer& buffer, Gt7FrameGen::Fram
     auto& s = *m_impl;
     inputs.valid = inputs.camera_valid = inputs.camera_pose_valid = inputs.hudless_valid = false;
     inputs.reset = true;
+    inputs.rejection_reason = Gt7FrameGen::StatusReason::WaitingInputs;
     if (!s.graphics.gt7_fsr_present_queue || !Gt7FrameGen::Requested()) return false;
-    const auto reject = [&](const char* reason) {
+    const auto reject = [&](const char* reason, Gt7FrameGen::StatusReason status) {
+        inputs.rejection_reason = status;
         if (Report(++s.fg_rejected))
             LOGF("GT7 FSR FG: input snapshot skipped #%llu frame=%llu: %s\n",
                  static_cast<unsigned long long>(s.fg_rejected),
                  static_cast<unsigned long long>(s.fg_frame), reason);
         return false;
     };
-    if (!s.initialized || s.active || s.fg_input_ambiguous || s.fg_temporal_attempts != 1 ||
-        s.evaluations != s.boundary_evaluations + 1 || s.composites != s.boundary_composites + 1)
-        return reject("no single verified DLSS scene composite in this guest frame");
-    if (!s.fg_camera_valid) return reject("camera/depth/motion/projection-jitter association not verified");
-    if (!s.fg_hudless_valid || s.fg_tonemap_attempts != 1 ||
-        presented_source.self_id != s.fg_output_id || presented_source.backing.image != s.fg_output_image ||
-        presented_source.info.data.address != s.fg_output_range.address ||
-        presented_source.info.data.size != s.fg_output_range.size ||
-        !Shape(presented_source, GuestWidth, GuestHeight, vk::Format::eA2B10G10R10UnormPack32))
-        return reject("no verified HUD-less tone-map output for the presented image");
-    if (s.fg_copied == s.fg_frame) return reject("guest frame already snapshotted");
+    // Keep each original scene prerequisite independent: a later scene writer,
+    // rejected TAA, and missing composite must not all look like a camera miss.
+    // Bits: 0 uninitialized, 1 active, 2 ambiguous, 3 TAA count,
+    //       4 evaluation count, 5 composite count.
+    const uint32_t scene_mismatch = (!s.initialized ? 1u << 0 : 0u) |
+        (s.active ? 1u << 1 : 0u) |
+        (s.fg_input_ambiguous ? 1u << 2 : 0u) |
+        (s.fg_temporal_attempts != 1 ? 1u << 3 : 0u) |
+        (s.evaluations != s.boundary_evaluations + 1 ? 1u << 4 : 0u) |
+        (s.composites != s.boundary_composites + 1 ? 1u << 5 : 0u);
+    if (scene_mismatch != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= s.fg_next_scene_report) {
+            s.fg_next_scene_report = now + std::chrono::seconds(5);
+            const auto& diagnostic = s.fg_scene_diagnostic;
+            std::printf("GT7 FSR FG scene: frame=%llu mask=0x%x initialized=%u active=%u ambiguous=%u taa_attempts=%u eval_delta=%llu composite_delta=%llu camera_valid=%u late_writers=%u stage=%s reason=%s writer_vs=%016llx depth=%u:%u motion=%u:%u\n",
+                static_cast<unsigned long long>(s.fg_frame), scene_mismatch,
+                s.initialized ? 1u : 0u, s.active ? 1u : 0u, s.fg_input_ambiguous ? 1u : 0u,
+                s.fg_temporal_attempts,
+                static_cast<unsigned long long>(s.evaluations - s.boundary_evaluations),
+                static_cast<unsigned long long>(s.composites - s.boundary_composites),
+                s.fg_camera_valid ? 1u : 0u, s.fg_camera_observations[CameraLate], diagnostic.stage,
+                diagnostic.reason[0] ? diagnostic.reason.data() : "no invalidating operation recorded",
+                static_cast<unsigned long long>(diagnostic.writer_vs),
+                diagnostic.depth_id.index, diagnostic.depth_id.generation,
+                diagnostic.motion_id.index, diagnostic.motion_id.generation);
+            if (diagnostic.scene_writer)
+                std::printf("GT7 FSR FG scene writer: frame=%llu source=first_scene_cancel vs=%016llx ps=%016llx %s\n",
+                    static_cast<unsigned long long>(s.fg_frame),
+                    static_cast<unsigned long long>(diagnostic.writer_vs),
+                    static_cast<unsigned long long>(diagnostic.writer_ps), diagnostic.writer_details.data());
+            std::fflush(stdout);
+        }
+        return reject("no single verified DLSS scene composite in this guest frame", Gt7FrameGen::StatusReason::SceneUnverified);
+    }
+    if (!s.fg_camera_valid)
+        return reject("camera/depth/motion/projection-jitter association not verified", Gt7FrameGen::StatusReason::CameraUnverified);
+    // Same acceptance conditions as before, with distinct mismatch bits so a
+    // valid capture followed by a different presented image is distinguishable
+    // from no matching tone-map or a later unverified writer.
+    // 0 invalid capture, 1 tone-map count, 2 image id, 3 backing image,
+    // 4 range address, 5 range size, 6 backing shape.
+    const uint32_t hudless_mismatch = (!s.fg_hudless_valid ? 1u << 0 : 0u) |
+        (s.fg_tonemap_attempts != 1 ? 1u << 1 : 0u) |
+        (presented_source.self_id != s.fg_output_id ? 1u << 2 : 0u) |
+        (presented_source.backing.image != s.fg_output_image ? 1u << 3 : 0u) |
+        (presented_source.info.data.address != s.fg_output_range.address ? 1u << 4 : 0u) |
+        (presented_source.info.data.size != s.fg_output_range.size ? 1u << 5 : 0u) |
+        (!Shape(presented_source, GuestWidth, GuestHeight, vk::Format::eA2B10G10R10UnormPack32) ? 1u << 6 : 0u);
+    if (hudless_mismatch != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= s.fg_next_hudless_report) {
+            s.fg_next_hudless_report = now + std::chrono::seconds(5);
+            const auto& diagnostic = s.fg_hudless_diagnostic;
+            std::printf("GT7 FSR FG HUD: frame=%llu stage=%s reason=%s tone_calls=%u tone_attempts=%u copy_attempts=%u captured=%u valid=%u ui=%u mismatch=0x%x output=%u:%u presented=%u:%u writer_vs=%016llx writer_ps=%016llx writer_overlay=%u writer_targets=%zu writer_mask=0x%x\n",
+                static_cast<unsigned long long>(s.fg_frame), diagnostic.stage,
+                diagnostic.reason[0] ? diagnostic.reason.data() : "tone-map draw did not reach matching entry",
+                diagnostic.tonemap_calls, s.fg_tonemap_attempts, diagnostic.capture_attempts,
+                diagnostic.captured ? 1u : 0u, s.fg_hudless_valid ? 1u : 0u, s.fg_ui_draws,
+                hudless_mismatch, s.fg_output_id.index, s.fg_output_id.generation,
+                presented_source.self_id.index, presented_source.self_id.generation,
+                static_cast<unsigned long long>(diagnostic.writer_vs),
+                static_cast<unsigned long long>(diagnostic.writer_ps),
+                diagnostic.writer_overlay ? 1u : 0u, diagnostic.writer_targets, diagnostic.writer_mask);
+            std::fflush(stdout);
+        }
+        return reject("no verified HUD-less tone-map output for the presented image", Gt7FrameGen::StatusReason::HudlessUnverified);
+    }
+    if (s.fg_copied == s.fg_frame)
+        return reject("guest frame already snapshotted", Gt7FrameGen::StatusReason::DuplicateFrame);
     if (s.depth->backing.state.layout == vk::ImageLayout::eUndefined ||
         s.motion->backing.state.layout == vk::ImageLayout::eUndefined ||
         !(s.depth->backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
         !(s.motion->backing.usage & vk::ImageUsageFlagBits::eTransferSrc))
-        return reject("private temporal inputs cannot be copied");
+        return reject("private temporal inputs cannot be copied", Gt7FrameGen::StatusReason::InputUnavailable);
     if (!ConfigureFrameGenerationImage(s.graphics, inputs.depth, vk::Format::eR32Sfloat) ||
         !ConfigureFrameGenerationImage(s.graphics, inputs.motion, vk::Format::eR32G32Sfloat) ||
         !ConfigureFrameGenerationImage(s.graphics, inputs.hudless_color,
             vk::Format::eA2B10G10R10UnormPack32, GuestWidth, GuestHeight))
-        return reject("frame-owned temporal image allocation unavailable");
+        return reject("frame-owned temporal image allocation unavailable", Gt7FrameGen::StatusReason::InputUnavailable);
 
     buffer.EndRendering();
     const auto command = buffer.Handle();

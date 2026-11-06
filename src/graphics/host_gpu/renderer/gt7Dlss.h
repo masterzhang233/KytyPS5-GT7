@@ -17,6 +17,7 @@ struct ShaderComputeInputInfo;
 struct TextureBinding;
 struct GuestRange;
 namespace Gt7FrameGen { struct FrameInputs; }
+namespace Gt7FrameGenCamera { struct RasterState; }
 
 // Experimental, opt-in GT7 1080p -> 1440p reconstruction. The owner must finish
 // all GPU work before destruction. No guest pixels are read back by this helper.
@@ -40,14 +41,15 @@ public:
     bool Composite(CommandBuffer& buffer, const TextureBinding& low_final,
                    const RenderColorInfo& high_target, uint32_t effect_count);
     void CancelFrame(const char* reason, bool invalidate_history = false);
+    // Same cancellation, with bounded owned diagnostics for the actual writer.
+    // Details are reported only by the existing rate-limited scene gate.
+    void CancelSceneWriterFrame(const char* reason, uint64_t vertex_shader,
+                                uint64_t pixel_shader, const char* details);
     // GPU recording thread only. Associate a verified ordinary motion producer's
     // camera with its depth/MV targets, then snapshot at the actual guest flip.
-    [[nodiscard]] static constexpr bool IsFrameGenerationCameraShader(uint64_t hash) {
-        // Verified position exports use object position * object matrix * the
-        // current view-projection loaded from guest s[10:11] + 80.
-        return hash == 0x48a3c58d37f8582fULL || hash == 0xd24c8423cd8ac4f3ULL ||
-               hash == 0x38971d1e2fbabfc8ULL;
-    }
+    // Accept the original independently verified producers and programs whose
+    // final position calculation has been proved by the shader compiler.
+    [[nodiscard]] static bool IsFrameGenerationCameraShader(const ShaderStageRuntime& vertex);
     void ObserveFrameGenerationCamera(const ShaderStageRuntime& vertex,
                                       const RenderDepthInfo& depth,
                                       std::span<const RenderColorInfo> colors);
@@ -55,7 +57,8 @@ public:
     void DescribeFrameGenerationDraw(const ShaderStageRuntime& vertex, uint64_t pixel_shader,
                                      const RenderDepthInfo& depth,
                                      std::span<const RenderColorInfo> colors,
-                                     bool full_viewport, bool storage_writes);
+                                     bool full_viewport, bool storage_writes,
+                                     const Gt7FrameGenCamera::RasterState& raster);
     void NoteFrameGenerationSceneTarget(const RenderColorInfo& target);
     [[nodiscard]] bool FrameGenerationTonemapMatches(const ShaderVertexInputInfo& vertex,
                                                      const PreparedBindings& pixel,

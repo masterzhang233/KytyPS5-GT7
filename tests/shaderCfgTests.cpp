@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDiskCache.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
@@ -19,6 +20,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/Gt7CameraPosition.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
@@ -38,6 +40,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <span>
@@ -52,6 +55,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
+
+void TestFontUnicodeFallback();
 
 namespace Libs::Graphics {
 namespace {
@@ -1039,6 +1044,10 @@ void EnsureConfigInitialized() {
     subsystems.Initialize<Config::Lifecycle>();
     Config::ConfigOptions options;
     options.printf_direction = Config::LogDirection::Silent;
+    if (const char* shader_log = std::getenv("KYTY_TEST_SHADER_LOG"); shader_log != nullptr) {
+      options.printf_direction = Config::LogDirection::File;
+      options.printf_output_file = shader_log;
+    }
     Config::Load(options);
     subsystems.Initialize<Log::Lifecycle>();
     ShaderInit();
@@ -15320,6 +15329,8 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
 }
 
 #include "ShaderRayTracingTests.inc"
+#include "Gt7CameraShaderTests.inc"
+#include "PixelInputContractTests.inc"
 
 } // namespace
 } // namespace Libs::Graphics
@@ -15328,6 +15339,26 @@ int main(int argc, char** argv) {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  if (argc == 2 && std::strcmp(argv[1], "--pixel-input-contract-only") == 0) {
+    TestPixelInputContract();
+    std::puts("ShaderCfgTests: pixel input contract tests passed");
+    return 0;
+  }
+  if ((argc == 6 || argc == 9) && std::strcmp(argv[1], "--pixel-input-shader") == 0) {
+    return ProbePixelInputShader(argc, argv);
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--font-unicode-only") == 0) {
+    TestFontUnicodeFallback();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--gt7-camera-only") == 0) {
+    TestGt7CameraShaderContract();
+    std::puts("ShaderCfgTests: GT7 camera-position contract tests passed");
+    return 0;
+  }
+  if ((argc == 5 || argc == 6) && std::strcmp(argv[1], "--gt7-camera-shader") == 0) {
+    return ProbeGt7CameraShader(argc, argv);
+  }
   if (argc == 2 && std::strcmp(argv[1], "--vte-only") == 0) {
     TestNewShaderRecompilerClipDisabledPosition();
     TestNewShaderRecompilerVtePositionFormats();
@@ -15335,9 +15366,15 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "Usage: %s [--vte-only]\n", argv[0]);
+    std::fprintf(stderr, "Usage: %s [--vte-only | --gt7-camera-only | --font-unicode-only | "
+                         "--pixel-input-contract-only | "
+                         "--gt7-camera-shader <code.bin> <user-base> <user-count> [wave-size] | "
+                         "--pixel-input-shader <code.bin> <input-count> <system-base> <no-perspective> "
+                         "[user-base user-count wave-size]]\n", argv[0]);
     return 2;
   }
+  TestGt7CameraShaderContract();
+  TestPixelInputContract();
   TestRayTracingInstructions();
   TestDeclaredShaderHashMarker();
   TestResourceDescriptorClassification();

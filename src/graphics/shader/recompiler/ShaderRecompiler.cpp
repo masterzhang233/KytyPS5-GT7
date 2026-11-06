@@ -15,6 +15,7 @@
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/Gt7CameraPosition.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
@@ -767,6 +768,9 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 		}
 	}
 	ir.bindless_images        = options.bindless_images;
+	// Scalar-address provenance and the final position expression are both present here.
+	// Resource tracking may replace these reads with snapshotted flat-buffer slots.
+	ir.gt7_camera_position = IR::HasGt7CameraPositionContract(ir);
 	KYTY_PROFILER_PHASE(phases, "Shader: resource tracking", profiler::colors::Amber300);
 	const auto tracking_begin = std::chrono::steady_clock::now();
 	const bool tracked        = IR::TrackResources(ir, decoded, native_cfg);
@@ -881,6 +885,12 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	IR::RemoveIdentities(ir.blocks);
 	IR::EliminateDeadCode(ir.blocks);
 
+	if (const auto* reason = IR::UnsupportedPixelInputReferences(ir, options.input_info);
+	    reason != nullptr) {
+		CompileResult unsupported;
+		unsupported.unsupported = reason;
+		return unsupported;
+	}
 	IR::CollectShaderInfo(ir, options.input_info);
 	IR::AllocateBindings(ir, push_data_start_dword,
 	                     ir.stage == ShaderType::Compute && options.input_info.compute != nullptr &&

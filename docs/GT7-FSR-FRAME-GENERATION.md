@@ -8,7 +8,7 @@ cadence. SteamVR is outside this integration.
 
 ## Activation
 
-The Tohi-GT7 1.0.0 launcher provides one default-enabled **DLSS** checkbox. It
+The Tohi-GT7 launcher provides one default-enabled **DLSS** checkbox. It
 selects the fixed desktop 1080p-to-1440p DLSS configuration, FSR 3.1.4 2× frame
 generation and the occlusion correction together. There is no DLSS quality menu.
 The developer activation methods below remain opt-in; the raw emulator does not
@@ -32,7 +32,7 @@ An offline prototype on eight captured consecutive pairs removed the prominent
 old-car fragments while replacing roughly 1.9–3.5% of screen pixels. This is a
 local temporal fallback, not proof of correct intermediate-time reconstruction:
 road/shadow seams and repeated-motion patches remain possible. Those screenshots
-do not establish real-time quality or performance. The candidate uses no extra
+do not establish real-time quality or performance. The implementation uses no extra
 mask dilation, since widening it added other affected pixels with little benefit.
 
 The production GPU helper passed 23 standalone replay checks on the local
@@ -52,15 +52,25 @@ car/camera/track combination, not every possible scene. Neither the capture coun
 nor the window's base-frame FPS establishes the final display frame rate.
 
 Ordinary play uses silent API logging to avoid very large traces during long
-sessions. Fatal messages remain in `stdout.log`. Pass `-DiagnosticLogging` for
-a short run when inspecting the detailed FG counters described below. The
+sessions. Starting with 1.0.1, the launcher stdout log still records FG runtime
+initialization failures and a bounded status summary every five seconds, including
+successful non-reset dispatches and the current input rejection reason. At orderly
+swapchain teardown it reports the SDK's present-submission count when available;
+this count includes present attempts and is not measured display frames.
+Fatal messages remain in stdout. Pass `-DiagnosticLogging` to the developer
+test script for a short run when detailed API traces are needed. The
 occlusion guard emits a limited activity summary even in silent mode.
 `-CaptureTemporalInputs` automatically
 enables detailed logging. Close the diagnostic session after collecting evidence.
 
-The local `Start-GT7-DLSS-Playtest.ps1` and
-`Start-GT7-DLSS-FSR-Playtest.ps1` wrappers share progress across both playtest
-output roots. GT7's offline progress is stored in
+For ordinary play, use `launcher.exe` or the packaged `Start-GT7-Desktop.cmd`.
+Both use the saved launcher configuration and the installation's existing save
+directories. The old local `Start-GT7-DLSS-Playtest` shortcut used a separate
+SR-only development build; it has been redirected to the desktop release launcher.
+It must not be used as evidence that release frame generation was disabled.
+
+Developer runs through `GT7-Test-DLSS.ps1` can share progress across both playtest
+output roots when those roots are explicitly supplied. GT7's offline progress is stored in
 `_DownloadData/PPSA01317/gt7save.bin`. Each new session copies the latest saved
 progress from a normally finished, successful playtest, including its save and
 trophy directories; failed or active runs are not selected automatically.
@@ -81,11 +91,40 @@ can stall rendering and must not be used to measure performance.
 
 ## Input and synchronization contract
 
+Version 1.0.1 includes camera-validation and scene-composition corrections based
+on Monza and Nürburgring diagnostics, including cockpit views. Six automated
+regression suites passed. Final in-game acceptance of the latest changes across
+these tracks/views was not completed; intermediate builds generated frames but
+still exhibited intermittent fallback. Unsupported effects continue to use
+ordinary presentation. These checks do not establish uninterrupted frame
+generation or final visual quality on every track and camera.
+
+- Camera producer recognition retains the original independently verified shader
+  signatures and additionally proves the final POS0 calculation in compiler IR.
+  The bounded proof accepts equivalent vector/model/camera multiplication orders:
+  all four clip coordinates must use the corresponding columns of the current
+  view-projection at original guest `s[10:11]+80`, with identical source products.
+  A familiar constant-buffer layout or plausible matrix alone is insufficient.
+  Unsupported control flow, extra depth offsets, mismatched columns and nonlinear
+  camera products fail closed. No track-name allowlist is involved.
+- Camera draws must also retain ordinary homogeneous coordinates, zero-to-one
+  clipping, unit depth scale, zero depth offset and no polygon bias or viewport
+  indexing. A Layer export is allowed only when the one-layer attachment makes
+  the pipeline's existing layer-limit specialization force all exports to zero;
+  the depth/motion observer still requires complete single-layer base views.
+  Compiler metadata survives shader-cache hits;
+  cache format 5 prevents older records without the proof field being reused.
 - Capture the validated TAA path's reversed depth and clean current-to-previous
   motion in render pixels. Each prepared presenter frame owns independent GPU
   copies; presentation never reads a subsequently reused DLSS scratch image.
 - Derive projection metadata from the recognized GT7 motion producer's camera
-  constants. Camera validity, render dimensions, jitter, frame identity and
+  constants: the current VP at +80, rigid right-handed view at +144 and finite
+  reverse-Z projection at +208 must satisfy V*P=VP. Projection shape, aspect and
+  exact same-frame TAA jitter remain required. The unrelated +976 tail is no
+  longer treated as a mandatory unjittered projection copy: shader position
+  provenance does not prove that layout across producers. It is read only by
+  the optional diagnostic probe, never used for frame-generation parameters.
+  Camera validity, render dimensions, jitter, frame identity and
   successful DLSS composition must match. Do not substitute guessed camera
   parameters.
 - Record FidelityFX prepare on the presentation queue with asynchronous
@@ -119,13 +158,15 @@ successful interpolation dispatches. A loaded DLL, a requested setting or a
 prepare count alone does not establish that a generated frame was displayed.
 `non_reset_total` counts successful interpolation calls with valid history;
 reset-only calls are recorded separately and do not establish active 2x output.
-The existing window FPS counter counts host presentation calls, not the
+The window's `game fps` counter counts original game frames, not the
 replacement swapchain's generated images.
 
-The window title shows `FSR FG: standby` until a successful, non-reset
-interpolation dispatch has occurred recently, then shows `FSR FG: 2x`. This is
-an activity indicator, not a measurement of display FPS. Unsupported scenes can
-remain in standby while DLSS Super Resolution continues working.
+The window title puts `game fps` and FG status before hardware details. It shows
+`FSR FG: off` when disabled, `standby` with a short reason when inputs are not
+ready, `error` when initialization fails, and `FSR FG: 2x active` after a recent
+successful, non-reset interpolation dispatch. This is an activity indicator,
+not a measurement of display FPS. Unsupported scenes can remain in standby while
+DLSS Super Resolution continues working.
 
 The playtest manifest records requested options separately from verification.
 In particular, requesting Vulkan validation is insufficient when the log says

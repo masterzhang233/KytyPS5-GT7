@@ -165,6 +165,7 @@ public:
 		// This allocation can next be used for a movie, blank or VR frame.
 		frame->frame_generation.valid = false;
 		frame->frame_generation.hudless_valid = false;
+		frame->frame_generation.rejection_reason = Gt7FrameGen::StatusReason::WaitingInputs;
 		return frame;
 	}
 
